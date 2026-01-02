@@ -32,6 +32,7 @@ static const luaL_Reg lib[] = {
 	{"stop", stop},
 	{"tcpSharedListen", tcpSharedListen},
 	{"registerTypeName", registerTypeName},
+	{"sendLog", sendLog},
 	{nullptr, nullptr}
 };
 

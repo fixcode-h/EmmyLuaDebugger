@@ -130,6 +130,28 @@ int registerTypeName(lua_State* L)
 	return 2;
 }
 
+// emmy.sendLog(type: int, message: string): void
+// type: 0=Debug, 1=Info, 2=Warning, 3=Error
+int sendLog(lua_State* L)
+{
+	luaL_checknumber(L, 1);
+	luaL_checkstring(L, 2);
+	const auto type = static_cast<int>(lua_tointeger(L, 1));
+	const auto message = lua_tostring(L, 2);
+	
+	LogType logType = LogType::Info;
+	switch (type) {
+		case 0: logType = LogType::Debug; break;
+		case 1: logType = LogType::Info; break;
+		case 2: logType = LogType::Warning; break;
+		case 3: logType = LogType::Error; break;
+		default: logType = LogType::Info; break;
+	}
+	
+	EmmyFacade::Get().SendLog(logType, "%s", message);
+	return 0;
+}
+
 int gc(lua_State* L)
 {
 	EmmyFacade::Get().OnLuaStateGC(L);

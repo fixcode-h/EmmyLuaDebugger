@@ -31,6 +31,9 @@ int stop(lua_State* L);
 // emmy.registerTypeName(typeName: string): bool
 int registerTypeName(lua_State* L);
 
+// emmy.sendLog(type: int, message: string): void
+int sendLog(lua_State* L);
+
 bool install_emmy_debugger(struct lua_State* L);
 
 std::string prepareEvalExpr(const std::string& eval);

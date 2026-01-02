@@ -70,8 +70,13 @@ void Debugger::Attach() {
 				if (r == LUA_OK) {
 					if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
 						std::string msg = lua_tostring(L, -1);
-						printf("msg: %s", msg.c_str());
+						EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] Load failed: %s", msg.c_str());
+					} else {
+						EmmyFacade::Get().SendLog(LogType::Info, "[EmmyHelper] Loaded successfully");
 					}
+				} else {
+					std::string msg = lua_tostring(L, -1);
+					EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] Compile failed: %s", msg.c_str());
 				}
 			}
 			lua_settop(L, t);

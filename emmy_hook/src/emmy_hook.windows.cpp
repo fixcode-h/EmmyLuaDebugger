@@ -202,7 +202,7 @@ void LoadSymbolsRecursively(HANDLE hProcess, HMODULE hModule)
 		}
 	}
 
-	EmmyFacade::Get().SendLog(LogType::Info, "analyze: %s", moduleName);
+	EmmyFacade::Get().SendLog(LogType::Debug, "analyze: %s", moduleName);
 
 	PE pe = {};
 	PE_STATUS st = peOpenFile(&pe, modulePath);
@@ -223,7 +223,7 @@ void LoadSymbolsRecursively(HANDLE hProcess, HMODULE hModule)
 					addr += pSymbol->Address.VA - pe.qwBaseAddress;
 					symbols[pSymbol->Name] = addr;
 
-					EmmyFacade::Get().SendLog(LogType::Info, "\t[B]Lua symbol: %s", name);
+					EmmyFacade::Get().SendLog(LogType::Debug, "\t[B]Lua symbol: %s", name);
 				}
 			}
 		}

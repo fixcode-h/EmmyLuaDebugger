@@ -27,9 +27,10 @@
 
 enum class LogType
 {
-	Info,
-	Warning,
-	Error
+	Debug,    // 调试信息（调试器内部使用）
+	Info,     // 普通信息
+	Warning,  // 警告
+	Error     // 错误
 };
 
 enum class WorkMode
