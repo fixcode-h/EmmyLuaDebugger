@@ -135,6 +135,7 @@ private:
 	bool running;
 	bool skipHook;
 	bool blocking;
+	bool helperLoaded;  // 标记 helperCode 是否已加载，防止重复执行
 
 	std::vector<std::string> doStringList;
 

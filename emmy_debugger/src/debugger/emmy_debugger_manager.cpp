@@ -245,6 +245,8 @@ void EmmyDebuggerManager::SetRunning(bool value)
 		for(auto debugger: GetDebuggers())
 		{
 			debugger->Start();
+			// 重新连接时也需要执行 helperCode
+			debugger->Attach();
 		}
 	}
 }

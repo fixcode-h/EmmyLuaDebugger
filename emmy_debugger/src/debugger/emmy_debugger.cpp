@@ -41,6 +41,7 @@ Debugger::Debugger(lua_State *L, EmmyDebuggerManager *manager)
 	  running(false),
 	  skipHook(false),
 	  blocking(false),
+	  helperLoaded(false),
 	  arenaRef(nullptr),
 	  displayCustomTypeInfo(false) {
 }
@@ -52,15 +53,21 @@ void Debugger::Start() {
 	skipHook = false;
 	blocking = false;
 	running = true;
+	helperLoaded = false;  // 重置标志位，允许重新加载 helperCode
 	doStringList.clear();
 }
 
 void Debugger::Attach() {
 	if (!running)
 		return;
+	
+	// 防止重复加载 helperCode
+	if (helperLoaded)
+		return;
 
 	// execute helper code
 	if (!manager->helperCode.empty()) {
+		helperLoaded = true;  // 标记为已加载
 		ExecuteOnLuaThread([this](lua_State *L) {
 			const int t = lua_gettop(L);
 			// 判断是不是主lua_state
