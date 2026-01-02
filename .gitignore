@@ -1,8 +1,40 @@
+# IDE
 .vscode
-build
 .vs
-out
-build_script
-cmake-build-debug
-cmake-build-release
 .idea
+
+# CMake 生成的文件
+build/
+out/
+cmake-build-debug/
+cmake-build-release/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+**/CMakeFiles/
+**/cmake_install.cmake
+
+# Visual Studio 生成的文件
+*.sln
+*.vcxproj
+*.vcxproj.filters
+x64/
+Debug/
+Release/
+**/Debug/
+**/Release/
+*.dir/
+
+# 构建脚本
+build_script/
+
+# 编译产物
+*.obj
+*.lib
+*.dll
+*.exe
+*.pdb
+*.exp
+*.ilk
+*.iobj
+*.ipdb
