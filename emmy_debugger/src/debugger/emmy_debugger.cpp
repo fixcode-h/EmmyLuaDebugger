@@ -61,34 +61,78 @@ void Debugger::Attach() {
 	if (!running)
 		return;
 	
-	// 防止重复加载 helperCode
+	// 防止重复加载
 	if (helperLoaded)
 		return;
 
-	// execute helper code
-	if (!manager->helperCode.empty()) {
-		helperLoaded = true;  // 标记为已加载
-		ExecuteOnLuaThread([this](lua_State *L) {
-			const int t = lua_gettop(L);
-			// 判断是不是主lua_state
-			int ret = lua_pushthread(L);
-			if (ret == 1) {
-				const int r = luaL_loadstring(L, manager->helperCode.c_str());
-				if (r == LUA_OK) {
-					if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-						std::string msg = lua_tostring(L, -1);
-						EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] Load failed: %s", msg.c_str());
-					} else {
-						EmmyFacade::Get().SendLog(LogType::Info, "[EmmyHelper] Loaded successfully");
-					}
-				} else {
-					std::string msg = lua_tostring(L, -1);
-					EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] Compile failed: %s", msg.c_str());
-				}
-			}
+	// 需要 emmyHelperPath 才能加载
+	if (manager->emmyHelperPath.empty())
+		return;
+
+	helperLoaded = true;
+	ExecuteOnLuaThread([this](lua_State *L) {
+		const int t = lua_gettop(L);
+		// 判断是不是主lua_state
+		int ret = lua_pushthread(L);
+		if (ret != 1) {
 			lua_settop(L, t);
-		});
-	}
+			return;
+		}
+		
+		// 1. 获取 package.path
+		lua_getglobal(L, "package");
+		if (!lua_istable(L, -1)) {
+			EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] package table not found");
+			lua_settop(L, t);
+			return;
+		}
+		lua_getfield(L, -1, "path");
+		const char* oldPath = lua_tostring(L, -1);
+		std::string newPath = oldPath ? oldPath : "";
+		
+		// 2. 添加 emmyHelperPath 到 package.path
+		if (!newPath.empty()) newPath += ";";
+		newPath += manager->emmyHelperPath + "/?.lua";
+		
+		// 3. 如果有 customHelperPath，也添加到 package.path（优先级更高）
+		if (!manager->customHelperPath.empty()) {
+			newPath = manager->customHelperPath + "/?.lua;" + newPath;
+		}
+		
+		// 4. 设置新的 package.path
+		lua_pop(L, 1);  // 弹出旧的 path
+		lua_pushstring(L, newPath.c_str());
+		lua_setfield(L, -2, "path");
+		lua_pop(L, 1);  // 弹出 package 表
+		
+		EmmyFacade::Get().SendLog(LogType::Debug, "[EmmyHelper] package.path updated");
+		
+		// 5. require 主 helper 脚本
+		std::string helperName = manager->emmyHelperName.empty() ? "emmyHelper" : manager->emmyHelperName;
+		lua_getglobal(L, "require");
+		lua_pushstring(L, helperName.c_str());
+		if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+			std::string msg = lua_tostring(L, -1);
+			EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] require '%s' failed: %s", helperName.c_str(), msg.c_str());
+			lua_settop(L, t);
+			return;
+		}
+		EmmyFacade::Get().SendLog(LogType::Info, "[EmmyHelper] Loaded: %s", helperName.c_str());
+		lua_pop(L, 1);  // 弹出 require 返回值
+		
+		// 6. require 扩展脚本（如果指定了）
+		std::string extName = manager->emmyHelperExtName.empty() ? "emmyHelper_ue" : manager->emmyHelperExtName;
+		lua_getglobal(L, "require");
+		lua_pushstring(L, extName.c_str());
+		if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+			std::string msg = lua_tostring(L, -1);
+			EmmyFacade::Get().SendLog(LogType::Error, "[EmmyHelper] Extension '%s' not found: %s", extName.c_str(), msg.c_str());
+		} else {
+			EmmyFacade::Get().SendLog(LogType::Info, "[EmmyHelper] Extension loaded: %s", extName.c_str());
+		}
+		
+		lua_settop(L, t);
+	});
 }
 
 void Debugger::Detach() {

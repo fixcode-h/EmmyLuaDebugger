@@ -33,8 +33,20 @@ nlohmann::json InitParams::Serialize() {
 }
 
 void InitParams::Deserialize(nlohmann::json json) {
-	if (json["emmyHelper"].is_string()) {
-		emmyHelper = json["emmyHelper"];
+	if (json["emmyHelperPath"].is_string()) {
+		emmyHelperPath = json["emmyHelperPath"];
+	}
+	
+	if (json["customHelperPath"].is_string()) {
+		customHelperPath = json["customHelperPath"];
+	}
+	
+	if (json["emmyHelperName"].is_string()) {
+		emmyHelperName = json["emmyHelperName"];
+	}
+	
+	if (json["emmyHelperExtName"].is_string()) {
+		emmyHelperExtName = json["emmyHelperExtName"];
 	}
 
 	if (json["ext"].is_array()) {

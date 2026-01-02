@@ -244,7 +244,10 @@ void EmmyFacade::InitReq(InitParams & params) {
 		StartHook();
 	}
 
-	_emmyDebuggerManager.helperCode = params.emmyHelper;
+	_emmyDebuggerManager.emmyHelperPath = params.emmyHelperPath;
+	_emmyDebuggerManager.customHelperPath = params.customHelperPath;
+	_emmyDebuggerManager.emmyHelperName = params.emmyHelperName;
+	_emmyDebuggerManager.emmyHelperExtName = params.emmyHelperExtName;
 	_emmyDebuggerManager.extNames.clear();
 	_emmyDebuggerManager.extNames = params.ext;
 

@@ -86,7 +86,10 @@ public:
 	// 按道理需要加锁
 	// 但实际上通常不会改变
 	// 暂时不加
-	std::string helperCode;
+	std::string emmyHelperPath;     // emmyHelper 目录路径
+	std::string customHelperPath;   // 自定义 helper 目录路径（可选）
+	std::string emmyHelperName;     // 主 helper 脚本名称
+	std::string emmyHelperExtName;  // 扩展脚本名称
 	std::vector<std::string> extNames;
 
 	ExtensionPoint extension;

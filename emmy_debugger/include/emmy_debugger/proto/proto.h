@@ -52,7 +52,10 @@ public:
 
 class InitParams : public JsonProtocol {
 public:
-	std::string emmyHelper;
+	std::string emmyHelperPath;     // emmyHelper 目录路径（插件资源目录）
+	std::string customHelperPath;   // 自定义 helper 目录路径（可选，可断点调试）
+	std::string emmyHelperName;     // 主 helper 脚本名称（默认 "emmyHelper"）
+	std::string emmyHelperExtName;  // 扩展脚本名称（默认 "emmyHelper_ue"，可自定义如 "emmyHelper_custom"）
 	std::vector<std::string> ext;
 
 	virtual nlohmann::json Serialize();
