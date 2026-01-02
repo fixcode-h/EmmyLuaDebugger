@@ -1,6 +1,5 @@
 ﻿#include "emmy_hook.h"
 #include <cassert>
-#include <mutex>
 #include <set>
 #include <unordered_map>
 #include "emmy_debugger/emmy_facade.h"
@@ -39,8 +38,11 @@ typedef HMODULE (WINAPI *LoadLibraryExW_t)(LPCWSTR lpFileName, HANDLE hFile, DWO
 
 LoadLibraryExW_t LoadLibraryExW_dll = nullptr;
 
-std::mutex mutexPostLoadModule;
-std::set<std::string> loadedModules;
+// 使用 Windows 原生的 SRWLOCK，它可以在编译时静态初始化（SRWLOCK_INIT）
+// 完全不需要运行时初始化，避免了 std::mutex 在 DLL 加载场景下的初始化问题
+// SRWLOCK 比 CRITICAL_SECTION 更轻量，且不需要调用 InitializeCriticalSection
+static SRWLOCK g_srwPostLoadModule = SRWLOCK_INIT;
+static std::set<std::string> g_loadedModules;
 
 HOOK_STATUS Hook(void* InEntryPoint,
                  void* InHookProc,
@@ -167,10 +169,10 @@ void LoadSymbolsRecursively(HANDLE hProcess, HMODULE hModule)
 	char moduleName[_MAX_PATH];
 	ZeroMemory(moduleName, _MAX_PATH);
 	DWORD nameLen = GetModuleBaseName(hProcess, hModule, moduleName, _MAX_PATH);
-	if (nameLen == 0 || loadedModules.find(moduleName) != loadedModules.end())
+	if (nameLen == 0 || g_loadedModules.find(moduleName) != g_loadedModules.end())
 		return;
 
-	loadedModules.insert(moduleName);
+	g_loadedModules.insert(moduleName);
 	char modulePath[_MAX_PATH];
 	// skip modules in c://WINDOWS
 	{
@@ -255,8 +257,10 @@ void PostLoadLibrary(HMODULE hModule)
 	char moduleName[_MAX_PATH];
 	GetModuleBaseName(hProcess, hModule, moduleName, _MAX_PATH);
 
-	std::lock_guard<std::mutex> lock(mutexPostLoadModule);
+	// 使用 SRWLOCK 进行同步，它在编译时初始化，不会有运行时初始化问题
+	AcquireSRWLockExclusive(&g_srwPostLoadModule);
 	LoadSymbolsRecursively(hProcess, hModule);
+	ReleaseSRWLockExclusive(&g_srwPostLoadModule);
 }
 
 HMODULE WINAPI LoadLibraryExW_intercept(LPCWSTR fileName, HANDLE hFile, DWORD dwFlags)
@@ -416,6 +420,11 @@ void redirect(int port)
 
 int StartupHookMode(void* lpParam)
 {
+	// 在这里初始化 EmmyFacade，而不是在 DllMain 中
+	// 因为 DllMain 在 loader lock 下执行，CRT 可能还没有完全初始化
+	EmmyFacade::Get().SetWorkMode(WorkMode::Attach);
+	EmmyFacade::Get().StartHook = FindAndHook;
+	
 	const int pid = (int)GetCurrentProcessId();
 	EmmyFacade::Get().StartupHookMode(pid);
 
@@ -429,7 +438,11 @@ int StartupHookMode(void* lpParam)
 
 void FindAndHook()
 {
-	HookLoadLibrary();
+	// 重要：先处理现有模块，最后再安装钩子
+	// 如果先安装钩子，LoadSymbolsRecursively 中的操作（如 SendLog、peOpenFile）
+	// 可能触发新的 DLL 加载，导致 LoadLibraryExW_intercept 被调用，
+	// 它会尝试获取已经被 PostLoadLibrary 持有的锁，造成死锁
+	// （SRWLOCK 不支持递归锁定）
 
 	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
 	if (hSnapshot)
@@ -449,4 +462,7 @@ void FindAndHook()
 		PostLoadLibrary(module);
 	}
 	CloseHandle(hSnapshot);
+
+	// 最后安装钩子，拦截后续的 DLL 加载
+	HookLoadLibrary();
 }

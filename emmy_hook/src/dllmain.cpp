@@ -25,8 +25,10 @@ HINSTANCE g_hInstance = NULL;
 
 BOOL WINAPI DllMain(HINSTANCE hModule, DWORD reason, LPVOID reserved) {
 	g_hInstance = hModule;
-	EmmyFacade::Get().SetWorkMode(WorkMode::Attach);
-	EmmyFacade::Get().StartHook = FindAndHook;
+	// 注意：不要在 DllMain 中调用 EmmyFacade::Get()
+	// 因为 DllMain 在 loader lock 下执行，CRT 可能还没有完全初始化
+	// std::mutex 等对象在 Debug 模式下需要 CRT 完全就绪才能正确初始化
+	// 将初始化延迟到 StartupHookMode 中执行
 	
 	if (reason == DLL_PROCESS_ATTACH) {
 		TSharedData data;

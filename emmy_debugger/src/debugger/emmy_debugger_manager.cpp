@@ -20,7 +20,7 @@ EmmyDebuggerManager::~EmmyDebuggerManager()
 
 std::shared_ptr<Debugger> EmmyDebuggerManager::GetDebugger(lua_State* L)
 {
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 	auto identify = GetUniqueIdentify(L);
 	auto it = debuggers.find(identify);
 	if (it != debuggers.end())
@@ -35,7 +35,7 @@ std::shared_ptr<Debugger> EmmyDebuggerManager::GetDebugger(lua_State* L)
 
 std::shared_ptr<Debugger> EmmyDebuggerManager::AddDebugger(lua_State* L)
 {
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 
 	auto identify = GetUniqueIdentify(L);
 
@@ -78,7 +78,7 @@ std::shared_ptr<Debugger> EmmyDebuggerManager::AddDebugger(lua_State* L)
 
 std::shared_ptr<Debugger> EmmyDebuggerManager::RemoveDebugger(lua_State* L)
 {
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 	auto identify = GetUniqueIdentify(L);
 	auto it = debuggers.find(identify);
 	if (it != debuggers.end())
@@ -92,7 +92,7 @@ std::shared_ptr<Debugger> EmmyDebuggerManager::RemoveDebugger(lua_State* L)
 
 std::vector<std::shared_ptr<Debugger>> EmmyDebuggerManager::GetDebuggers()
 {
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 	std::vector<std::shared_ptr<Debugger>> debuggerVector;
 	for (auto it : debuggers)
 	{
@@ -103,31 +103,31 @@ std::vector<std::shared_ptr<Debugger>> EmmyDebuggerManager::GetDebuggers()
 
 void EmmyDebuggerManager::RemoveAllDebugger()
 {
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 	debuggers.clear();
 }
 
 std::shared_ptr<Debugger> EmmyDebuggerManager::GetHitBreakpoint()
 {
-	std::lock_guard<std::mutex> lock(breakDebuggerMtx);
+	EMMY_LOCK_GUARD(breakDebuggerMtx);
 	return hitDebugger;
 }
 
 void EmmyDebuggerManager::SetHitDebugger(std::shared_ptr<Debugger> debugger)
 {
-	std::lock_guard<std::mutex> lock(breakDebuggerMtx);
+	EMMY_LOCK_GUARD(breakDebuggerMtx);
 	hitDebugger = debugger;
 }
 
 bool EmmyDebuggerManager::IsDebuggerEmpty()
 {
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 	return debuggers.empty();
 }
 
 void EmmyDebuggerManager::AddBreakpoint(std::shared_ptr<BreakPoint> breakpoint)
 {
-	std::lock_guard<std::mutex> lock(breakpointsMtx);
+	EMMY_LOCK_GUARD(breakpointsMtx);
 	bool isAdd = false;
 	for (std::shared_ptr<BreakPoint>& bp : breakpoints)
 	{
@@ -148,13 +148,13 @@ void EmmyDebuggerManager::AddBreakpoint(std::shared_ptr<BreakPoint> breakpoint)
 
 std::vector<std::shared_ptr<BreakPoint>> EmmyDebuggerManager::GetBreakpoints()
 {
-	std::lock_guard<std::mutex> lock(breakpointsMtx);
+	EMMY_LOCK_GUARD(breakpointsMtx);
 	return breakpoints;
 }
 
 void EmmyDebuggerManager::RemoveBreakpoint(const std::string& file, int line)
 {
-	std::lock_guard<std::mutex> lock(breakpointsMtx);
+	EMMY_LOCK_GUARD(breakpointsMtx);
 	auto it = breakpoints.begin();
 	while (it != breakpoints.end())
 	{
@@ -171,7 +171,7 @@ void EmmyDebuggerManager::RemoveBreakpoint(const std::string& file, int line)
 
 void EmmyDebuggerManager::RemoveAllBreakpoints()
 {
-	std::lock_guard<std::mutex> lock(breakpointsMtx);
+	EMMY_LOCK_GUARD(breakpointsMtx);
 	breakpoints.clear();
 	lineSet.clear();
 }
@@ -187,7 +187,7 @@ void EmmyDebuggerManager::RefreshLineSet()
 
 std::set<int> EmmyDebuggerManager::GetLineSet()
 {
-	std::lock_guard<std::mutex> lock(breakpointsMtx);
+	EMMY_LOCK_GUARD(breakpointsMtx);
 	return lineSet;
 }
 
@@ -230,7 +230,7 @@ void EmmyDebuggerManager::Eval(std::shared_ptr<EvalContext> ctx)
 void EmmyDebuggerManager::OnDisconnect()
 {
 	SetRunning(false);
-	std::lock_guard<std::mutex> lock(debuggerMtx);
+	EMMY_LOCK_GUARD(debuggerMtx);
 	for (auto it : debuggers)
 	{
 		it.second->Stop();

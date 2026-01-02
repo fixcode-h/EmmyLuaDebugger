@@ -22,6 +22,7 @@
 #include "emmy_debugger/transporter/transporter.h"
 #include "emmy_debugger/api/lua_api.h"
 #include "emmy_debugger/debugger/emmy_debugger_manager.h"
+#include "emmy_debugger/platform/lock.h"
 #include "proto/proto_handler.h"
 
 enum class LogType
@@ -94,8 +95,9 @@ public:
 	std::function<void()> StartHook;
 
 private:
-	std::mutex waitIDEMutex;
-	std::condition_variable waitIDECV;
+	// 使用平台相关的锁类型
+	EmmyMutex waitIDEMutex = EMMY_MUTEX_INIT;
+	EmmyCondVar waitIDECV = EMMY_CONDVAR_INIT;
 	
 	std::shared_ptr<Transporter> transporter;
 	

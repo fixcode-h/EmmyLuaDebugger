@@ -25,6 +25,7 @@
 #include <bitset>
 
 #include "emmy_debugger/api/lua_api.h"
+#include "emmy_debugger/platform/lock.h"
 #include "hook_state.h"
 #include "emmy_debugger/proto/proto.h"
 #include "emmy_debugger/arena/arena.h"
@@ -122,8 +123,13 @@ private:
 
 	EmmyDebuggerManager* manager;
 
-	// 取消递归锁的使用
-	std::mutex hookStateMtx;
+	// 使用平台相关的锁类型
+	EmmyMutex hookStateMtx = EMMY_MUTEX_INIT;
+	EmmyMutex runMtx = EMMY_MUTEX_INIT;
+	EmmyMutex luaThreadMtx = EMMY_MUTEX_INIT;
+	EmmyMutex evalMtx = EMMY_MUTEX_INIT;
+	EmmyCondVar cvRun = EMMY_CONDVAR_INIT;
+
 	std::shared_ptr<HookState> hookState;
 
 	bool running;
@@ -132,13 +138,8 @@ private:
 
 	std::vector<std::string> doStringList;
 
-	std::mutex runMtx;
-	std::condition_variable cvRun;
-
-	std::mutex luaThreadMtx;
 	std::vector<Executor> luaThreadExecutors;
 
-	std::mutex evalMtx;
 	std::queue<std::shared_ptr<EvalContext>> evalQueue;
 
 	Arena<Variable> *arenaRef;

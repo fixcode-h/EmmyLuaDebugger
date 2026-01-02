@@ -9,6 +9,7 @@
 #include "hook_state.h"
 #include "emmy_debugger.h"
 #include "emmy_debugger/api/lua_api.h"
+#include "emmy_debugger/platform/lock.h"
 
 
 class EmmyDebuggerManager
@@ -92,15 +93,16 @@ public:
 private:
 	UniqueIdentifyType GetUniqueIdentify(lua_State* L);
 
-	// 需要一个锁，真的需要这个锁吗？
-	std::mutex debuggerMtx;
+	// 使用平台相关的锁类型，Windows 下使用 SRWLOCK 避免 DLL 初始化问题
+	EmmyMutex debuggerMtx = EMMY_MUTEX_INIT;
+	EmmyMutex breakDebuggerMtx = EMMY_MUTEX_INIT;
+	EmmyMutex breakpointsMtx = EMMY_MUTEX_INIT;
+
 	// key 是唯一标记（对普通lua就是main state指针，对luajit就是注册表指针）,value 是debugger
 	std::map<UniqueIdentifyType , std::shared_ptr<Debugger>> debuggers;
 
-	std::mutex breakDebuggerMtx;
 	std::shared_ptr<Debugger> hitDebugger;
 
-	std::mutex breakpointsMtx;
 	std::vector<std::shared_ptr<BreakPoint>> breakpoints;
 
 	std::set<int> lineSet;

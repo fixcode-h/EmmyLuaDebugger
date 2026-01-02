@@ -179,11 +179,16 @@ void EmmyFacade::WaitIDE(bool force, int timeout) {
 	    && !isWaitingForIDE
 	    && !isIDEReady) {
 		isWaitingForIDE = true;
-		std::unique_lock<std::mutex> lock(waitIDEMutex);
-		if (timeout > 0)
+		SRWUniqueLock lock(waitIDEMutex);
+		if (timeout > 0) {
+#ifdef _WIN32
+			SleepConditionVariableSRW(&waitIDECV, lock.mutex(), timeout, 0);
+#else
 			waitIDECV.wait_for(lock, std::chrono::milliseconds(timeout));
-		else
-			waitIDECV.wait(lock);
+#endif
+		} else {
+			EMMY_COND_WAIT(waitIDECV, lock, [this] { return isIDEReady; });
+		}
 		isWaitingForIDE = false;
 	}
 }
@@ -254,7 +259,7 @@ void EmmyFacade::InitReq(InitParams & params) {
 
 void EmmyFacade::ReadyReq() {
 	isIDEReady = true;
-	waitIDECV.notify_all();
+	EMMY_COND_NOTIFY_ALL(waitIDECV);
 }
 
 void EmmyFacade::OnReceiveMessage(nlohmann::json document) {
@@ -372,7 +377,11 @@ void EmmyFacade::StartDebug() {
 }
 
 void EmmyFacade::StartupHookMode(int port) {
-	Destroy();
+	// 只有在已经有 transporter 时才需要清理
+	// 首次调用时不需要 Destroy()，避免不必要的 mutex 操作
+	if (transporter) {
+		Destroy();
+	}
 
 	// 1024 - 65535
 	while (port > 0xffff) port -= 0xffff;

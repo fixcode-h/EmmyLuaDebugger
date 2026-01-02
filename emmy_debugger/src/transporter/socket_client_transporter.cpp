@@ -51,7 +51,7 @@ int SocketClientTransporter::Stop() {
 		uv_read_stop((uv_stream_t*)&uvClient);
 		uv_close((uv_handle_t*)&uvClient, nullptr);
 	}
-	cv.notify_all();
+	EMMY_COND_NOTIFY_ALL(cv);
 	return 0;
 }
 
@@ -71,8 +71,8 @@ bool SocketClientTransporter::Connect(const std::string& host, int port, std::st
 		return false;
 	}
 	StartEventLoop();
-	std::unique_lock<std::mutex> lock(mutex);
-	cv.wait(lock);
+	SRWUniqueLock lock(mutex);
+	EMMY_COND_WAIT(cv, lock, [this] { return connectionNotified; });
 	if (this->connectionStatus < 0) {
 		err = uv_strerror(this->connectionStatus);
 	}
@@ -89,7 +89,8 @@ void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
 		Stop();
 		OnConnect(false);
 	}
-	cv.notify_all();
+	connectionNotified = true;
+	EMMY_COND_NOTIFY_ALL(cv);
 }
 
 void SocketClientTransporter::Send(int cmd, const char* data, size_t len) {

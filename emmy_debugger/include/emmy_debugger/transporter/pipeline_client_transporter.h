@@ -18,11 +18,13 @@
 #include <condition_variable>
 #include "uv.h"
 #include "transporter.h"
+#include "emmy_debugger/platform/lock.h"
 
 class PipelineClientTransporter : public Transporter {
 	uv_pipe_t uvClient;
-	std::mutex mutex;
-	std::condition_variable cv;
+	EmmyMutex mutex = EMMY_MUTEX_INIT;
+	EmmyCondVar cv = EMMY_CONDVAR_INIT;
+	bool connectionNotified = false;
 public:
 	PipelineClientTransporter();
 	~PipelineClientTransporter();

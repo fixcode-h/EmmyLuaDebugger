@@ -75,8 +75,9 @@ bool PipelineClientTransporter::Connect(const std::string& name, std::string& er
 	uv_pipe_connect(req, &uvClient, fullName.c_str(), onPipeConnectionCB);
 	StartEventLoop();
 
-	std::unique_lock<std::mutex> lock(mutex);
-	cv.wait(lock);
+	SRWUniqueLock lock(mutex);
+	// 等待连接完成通知
+	EMMY_COND_WAIT(cv, lock, [this] { return connectionNotified; });
 	return IsConnected();
 }
 
@@ -93,5 +94,6 @@ void PipelineClientTransporter::OnPipeConnection(uv_connect_t* pipe, int status)
 		OnConnect(true);
 		uv_read_start((uv_stream_t*)&uvClient, echo_alloc, after_read);
 	}
-	cv.notify_all();
+	connectionNotified = true;
+	EMMY_COND_NOTIFY_ALL(cv);
 }

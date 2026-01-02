@@ -98,7 +98,7 @@ void Debugger::Hook(lua_Debug *ar, lua_State *L) {
 	if (getDebugEvent(ar) == LUA_HOOKLINE) {
 		// 对luaTreadExecutors 执行加锁
 		{
-			std::unique_lock<std::mutex> lock(luaThreadMtx);
+			EMMY_LOCK_GUARD(luaThreadMtx);
 			if (!luaThreadExecutors.empty()) {
 				for (auto &executor: luaThreadExecutors) {
 					ExecuteWithSkipHook(executor);
@@ -116,7 +116,7 @@ void Debugger::Hook(lua_Debug *ar, lua_State *L) {
 		std::shared_ptr<HookState> state = nullptr;
 
 		{
-			std::lock_guard<std::mutex> lock(hookStateMtx);
+			EMMY_LOCK_GUARD(hookStateMtx);
 			state = hookState;
 		}
 
@@ -140,13 +140,13 @@ void Debugger::Stop() {
 
 	// 清理hook 状态
 	{
-		std::lock_guard<std::mutex> lock(hookStateMtx);
+		EMMY_LOCK_GUARD(hookStateMtx);
 		hookState = nullptr;
 	}
 
 	{
 		// clear lua thread executors
-		std::unique_lock<std::mutex> luaThreadLock(luaThreadMtx);
+		EMMY_LOCK_GUARD(luaThreadMtx);
 		luaThreadExecutors.clear();
 	}
 	ExitDebugMode();
@@ -571,7 +571,7 @@ void Debugger::ClearCache() const {
 
 void Debugger::DoAction(DebugAction action) {
 	// 锁加到这里
-	std::lock_guard<std::mutex> lock(hookStateMtx);
+	EMMY_LOCK_GUARD(hookStateMtx);
 	switch (action) {
 		case DebugAction::Break:
 			SetHookState(manager->stateBreak);
@@ -656,14 +656,14 @@ void Debugger::HandleBreak() {
 
 // host thread
 void Debugger::EnterDebugMode() {
-	std::unique_lock<std::mutex> lock(runMtx);
+	SRWUniqueLock lock(runMtx);
 
 	blocking = true;
 	while (true) {
-		std::unique_lock<std::mutex> lockEval(evalMtx);
+		SRWUniqueLock lockEval(evalMtx);
 		if (evalQueue.empty() && blocking) {
 			lockEval.unlock();
-			cvRun.wait(lock, [this] { return !blocking || !evalQueue.empty(); });
+			EMMY_COND_WAIT(cvRun, lock, [this] { return !blocking || !evalQueue.empty(); });
 			lockEval.lock();
 		}
 		if (!evalQueue.empty()) {
@@ -684,7 +684,7 @@ void Debugger::EnterDebugMode() {
 
 void Debugger::ExitDebugMode() {
 	blocking = false;
-	cvRun.notify_all();
+	EMMY_COND_NOTIFY_ALL(cvRun);
 }
 
 
@@ -895,11 +895,11 @@ bool Debugger::Eval(std::shared_ptr<EvalContext> evalContext, bool force) {
 	}
 	// 加锁
 	{
-		std::unique_lock<std::mutex> lock(evalMtx);
+		EMMY_LOCK_GUARD(evalMtx);
 		evalQueue.push(evalContext);
 	}
 
-	cvRun.notify_all();
+	EMMY_COND_NOTIFY_ALL(cvRun);
 	return true;
 }
 
@@ -1454,7 +1454,7 @@ void Debugger::ExecuteWithSkipHook(const Executor &exec) {
 }
 
 void Debugger::ExecuteOnLuaThread(const Executor &exec) {
-	std::unique_lock<std::mutex> lock(luaThreadMtx);
+	EMMY_LOCK_GUARD(luaThreadMtx);
 	luaThreadExecutors.push_back(exec);
 }
 

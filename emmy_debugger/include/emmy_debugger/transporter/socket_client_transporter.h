@@ -18,13 +18,15 @@
 #include <condition_variable>
 #include "uv.h"
 #include "transporter.h"
+#include "emmy_debugger/platform/lock.h"
 
 class SocketClientTransporter : public Transporter {
 	uv_tcp_t uvClient;
 	uv_connect_t connect_req;
-	std::mutex mutex;
-	std::condition_variable cv;
-	int connectionStatus;
+	EmmyMutex mutex = EMMY_MUTEX_INIT;
+	EmmyCondVar cv = EMMY_CONDVAR_INIT;
+	int connectionStatus = 0;
+	bool connectionNotified = false;
 public:
 	SocketClientTransporter();
 	~SocketClientTransporter();
