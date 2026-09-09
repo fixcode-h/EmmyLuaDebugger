@@ -207,6 +207,23 @@ if(EMMY_VM_REGISTRY_TEST)
         add_test(NAME emmy_native_contract_test COMMAND emmy_native_contract_test)
         set_tests_properties(emmy_native_contract_test PROPERTIES WORKING_DIRECTORY ${emmy_SOURCE_DIR})
     endif()
+
+    if(NOT WIN32)
+        add_executable(emmy_native_contract_test
+                ${emmy_SOURCE_DIR}/tests/native_contract_test.cpp
+                ${emmy_SOURCE_DIR}/emmy_hook/src/hook_manager.cpp
+                src/api/lua_abi_descriptor.cpp
+                src/api/lua_version.cpp
+                src/vm/host_value_provider.cpp
+        )
+        target_include_directories(emmy_native_contract_test PRIVATE
+                ${emmy_debugger_SOURCE_DIR}/include
+                ${emmy_SOURCE_DIR}/emmy_hook/src
+        )
+        set_target_properties(emmy_native_contract_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+        add_test(NAME emmy_native_contract_test COMMAND emmy_native_contract_test)
+        set_tests_properties(emmy_native_contract_test PROPERTIES WORKING_DIRECTORY ${emmy_SOURCE_DIR})
+    endif()
     set_tests_properties(
             emmy_vm_registry_test
             emmy_protocol_v2_test
