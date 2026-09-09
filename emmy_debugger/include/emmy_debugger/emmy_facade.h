@@ -97,6 +97,7 @@ public:
 
 	void OnReceiveMessage(nlohmann::json document);
 	void OnV2Envelope(nlohmann::json document);
+	void OnTransportProtocolError(const std::string& reason);
 
 	uint64_t RegisterLuaVm(lua_State* L, const VmMetadata& metadata);
 	bool NotifyLuaVmReady(uint64_t registrationId);

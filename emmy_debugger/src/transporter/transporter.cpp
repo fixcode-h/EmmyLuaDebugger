@@ -14,7 +14,11 @@
 * limitations under the License.
 */
 #include "emmy_debugger/transporter/transporter.h"
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <limits>
 #include "emmy_debugger/emmy_facade.h"
 #include "nlohmann/json.hpp"
 
@@ -23,7 +27,10 @@ Transporter::Transporter(bool server):
 	readHead(true),
 	running(false),
 	connected(false),
-	serverMode(server)
+	serverMode(server),
+	maxFrameSize(kDefaultMaxFrameSize),
+	disconnectNotified(false),
+	protocolFailed(false)
 {
 	loop = uv_loop_new();
 	bufSize = 10 * 1024;
@@ -44,6 +51,10 @@ Transporter::~Transporter()
 void Transporter::Send(int cmd, const nlohmann::json document)
 {
 	std::string documentText = document.dump(-1, ' ', false, nlohmann::detail::error_handler_t::ignore);
+	if (documentText.size() > maxFrameSize) {
+		ProtocolError("outgoing_frame_too_large");
+		return;
+	}
 	Send(cmd, documentText.data(), documentText.size());
 }
 
@@ -72,49 +83,107 @@ void Transporter::OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t
 
 void Transporter::Receive(const char* data, size_t len)
 {
-	if (bufSize < len + receiveSize)
-	{
-		// maybe a bug
-		buf = static_cast<char*>(realloc(buf, bufSize + len));
+	if (data == nullptr || len == 0 || protocolFailed.load(std::memory_order_acquire)) {
+		return;
 	}
-	memcpy(buf + receiveSize, data, len);
-	receiveSize += len;
-
-	size_t pos = 0;
-	while (true)
-	{
-		size_t start = pos;
-		for (size_t i = pos; i < receiveSize; i++)
-		{
-			if (buf[i] == '\n')
-			{
-				pos = i + 1;
-				break;
+	const size_t maxBufferedBytes = maxFrameSize + 64;
+	size_t offset = 0;
+	while (offset < len && !protocolFailed.load(std::memory_order_acquire)) {
+		if (receiveSize >= maxBufferedBytes) {
+			if (!ProcessBufferedData() || receiveSize >= maxBufferedBytes) {
+				ProtocolError("frame_buffer_limit_exceeded");
+				return;
 			}
 		}
-		if (start != pos)
-		{
-			if (readHead)
-			{
-				// skip
+
+		size_t available = maxBufferedBytes - receiveSize;
+		size_t chunk = len - offset;
+		if (chunk > available) chunk = available;
+		const size_t required = receiveSize + chunk;
+		if (required > bufSize) {
+			size_t newSize = bufSize == 0 ? 1024 : bufSize;
+			while (newSize < required && newSize < maxBufferedBytes) {
+				const size_t doubled = newSize * 2;
+				newSize = doubled > newSize ? doubled : required;
 			}
-			else
-			{
-				std::string text(buf + start, pos - start);
-				auto document = nlohmann::json::parse(text);
-				// bug 如果lua代码执行结束,这里行为未定义
+			if (newSize < required || newSize > maxBufferedBytes) {
+				ProtocolError("frame_buffer_allocation_failed");
+				return;
+			}
+			char* resized = static_cast<char*>(realloc(buf, newSize));
+			if (resized == nullptr) {
+				ProtocolError("frame_buffer_allocation_failed");
+				return;
+			}
+			buf = resized;
+			bufSize = newSize;
+		}
+		memcpy(buf + receiveSize, data + offset, chunk);
+		receiveSize = required;
+		offset += chunk;
+		if (!ProcessBufferedData()) return;
+	}
+}
+
+bool Transporter::ProcessBufferedData()
+{
+	if (protocolFailed.load(std::memory_order_acquire)) return false;
+	size_t consumed = 0;
+	while (consumed < receiveSize) {
+		size_t newline = consumed;
+		while (newline < receiveSize && buf[newline] != '\n') {
+			++newline;
+		}
+		if (newline == receiveSize) {
+			if (receiveSize - consumed > maxFrameSize) {
+				ProtocolError("frame_line_too_large");
+				return false;
+			}
+			break;
+		}
+
+		const size_t lineLength = newline - consumed;
+		if (lineLength > maxFrameSize) {
+			ProtocolError("frame_line_too_large");
+			return false;
+		}
+
+		std::string line(buf + consumed, lineLength);
+		consumed = newline + 1;
+		if (readHead) {
+			if (line.empty()) {
+				ProtocolError("empty_command_line");
+				return false;
+			}
+			char* end = nullptr;
+			errno = 0;
+			const long command = std::strtol(line.c_str(), &end, 10);
+			if (errno != 0 || end == line.c_str() || *end != '\0' ||
+				command < 0 || command > 2147483647L) {
+				ProtocolError("invalid_command_line");
+				return false;
+			}
+			readHead = false;
+		} else {
+			try {
+				auto document = nlohmann::json::parse(line);
 				OnReceiveMessage(document);
+			} catch (const std::exception&) {
+				ProtocolError("invalid_json");
+				return false;
 			}
-			readHead = !readHead;
+			readHead = true;
 		}
-		else break;
 	}
 
-	if (pos > 0)
-	{
-		memcpy(buf, buf + pos, receiveSize - pos);
-		receiveSize -= pos;
+	if (consumed > 0) {
+		const size_t remaining = receiveSize - consumed;
+		if (remaining > 0) {
+			memmove(buf, buf + consumed, remaining);
+		}
+		receiveSize = remaining;
 	}
+	return !protocolFailed.load(std::memory_order_acquire);
 }
 
 void Transporter::OnReceiveMessage(const nlohmann::json document)
@@ -124,6 +193,9 @@ void Transporter::OnReceiveMessage(const nlohmann::json document)
 
 void Transporter::OnDisconnect()
 {
+	if (disconnectNotified.exchange(true, std::memory_order_acq_rel)) {
+		return;
+	}
 	connected = false;
 	readHead = true;
 	receiveSize = 0;
@@ -133,10 +205,41 @@ void Transporter::OnDisconnect()
 void Transporter::OnConnect(bool suc)
 {
 	connected = suc;
+	disconnectNotified.store(false, std::memory_order_release);
+	protocolFailed.store(false, std::memory_order_release);
 	readHead = true;
 	receiveSize = 0;
 
 	EmmyFacade::Get().OnConnect(suc);
+}
+
+void Transporter::SetMaxFrameSize(size_t size)
+{
+	if (size == 0) {
+		return;
+	}
+	maxFrameSize = size;
+}
+
+size_t Transporter::GetMaxFrameSize() const
+{
+	return maxFrameSize;
+}
+
+void Transporter::OnProtocolError(const std::string& reason)
+{
+	std::fprintf(stderr, "[Emmy] transport protocol error: %s\n", reason.c_str());
+	EmmyFacade::Get().OnTransportProtocolError(reason);
+}
+
+void Transporter::ProtocolError(const char* reason)
+{
+	if (protocolFailed.exchange(true, std::memory_order_acq_rel)) {
+		return;
+	}
+	OnProtocolError(reason == nullptr ? "protocol_error" : reason);
+	Stop();
+	OnDisconnect();
 }
 
 bool Transporter::IsConnected() const
@@ -180,6 +283,10 @@ static void async_write(uv_async_t* h)
 
 void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t len)
 {
+	if (len > maxFrameSize) {
+		ProtocolError("outgoing_frame_too_large");
+		return;
+	}
 	if (!IsConnected())
 	{
 		return;
@@ -206,6 +313,10 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 
 void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
 {
+	if (len > maxFrameSize) {
+		ProtocolError("outgoing_frame_too_large");
+		return;
+	}
 	if (!IsConnected())
 	{
 		return;

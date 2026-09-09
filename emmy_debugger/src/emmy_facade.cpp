@@ -366,6 +366,16 @@ void EmmyFacade::OnReceiveMessage(nlohmann::json document) {
 	_protoHandler.OnDispatch(document);
 }
 
+void EmmyFacade::OnTransportProtocolError(const std::string& reason) {
+	nlohmann::json error = nlohmann::json::object();
+	error["code"] = "PROTOCOL_ERROR";
+	error["message"] = reason;
+	error["retryable"] = false;
+	SendV2Document(MakeV2Envelope(
+		"error", "transport.error", _protocolSession.AgentSessionId(),
+		_protocolSession.ConnectionEpoch(), std::string(), 0, nlohmann::json(), false, error));
+}
+
 void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 	if (!document["protocolVersion"].is_number_integer() ||
 		document["protocolVersion"].get<int>() != 2) {

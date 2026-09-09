@@ -15,6 +15,9 @@
 */
 #pragma once
 
+#include <atomic>
+#include <cstddef>
+#include <string>
 #include <thread>
 #include "uv.h"
 #include "nlohmann/json_fwd.hpp"
@@ -57,6 +60,7 @@ enum class MessageCMD : int {
 };
 
 class Transporter {
+	static const size_t kDefaultMaxFrameSize = 1024 * 1024;
 	std::thread thread;
 	char* buf;
 	size_t bufSize;
@@ -65,6 +69,9 @@ class Transporter {
 	bool running;
 	bool connected;
 	bool serverMode;
+	size_t maxFrameSize;
+	std::atomic<bool> disconnectNotified;
+	std::atomic<bool> protocolFailed;
 protected:
 	uv_loop_t* loop;
 public:
@@ -73,6 +80,8 @@ public:
 	virtual int Stop();
 	bool IsConnected() const;
 	bool IsServerMode() const;
+	void SetMaxFrameSize(size_t size);
+	size_t GetMaxFrameSize() const;
 	void Send(int cmd, const nlohmann::json document);
 	// void SetHandler(std::shared_ptr<EmmyFacade> facade);
 	void OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
@@ -82,7 +91,10 @@ protected:
 	// send raw data
 	void Send(uv_stream_t* handler, const char* data, size_t len);
 	void Receive(const char* data, size_t len);
-	void OnReceiveMessage(const nlohmann::json document);
+	bool ProcessBufferedData();
+	virtual void OnReceiveMessage(const nlohmann::json document);
+	virtual void OnProtocolError(const std::string& reason);
+	void ProtocolError(const char* reason);
 	void StartEventLoop();
 	void Run();
 	virtual void OnDisconnect();

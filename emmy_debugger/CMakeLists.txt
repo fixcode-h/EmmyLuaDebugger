@@ -151,4 +151,17 @@ if(EMMY_VM_REGISTRY_TEST)
     )
     set_target_properties(emmy_protocol_v2_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
     add_test(NAME emmy_protocol_v2_test COMMAND emmy_protocol_v2_test)
+
+    add_executable(emmy_transporter_frame_test
+            ${emmy_SOURCE_DIR}/tests/transporter_frame_test.cpp
+    )
+    target_include_directories(emmy_transporter_frame_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include
+            ${emmy_SOURCE_DIR}/third-party/nlohmann/include
+            ${emmy_SOURCE_DIR}/third-party/libuv-1.46.0/include
+    )
+    target_link_libraries(emmy_transporter_frame_test PRIVATE emmy_debugger)
+    add_dependencies(emmy_transporter_frame_test emmy_debugger)
+    set_target_properties(emmy_transporter_frame_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME emmy_transporter_frame_test COMMAND emmy_transporter_frame_test)
 endif()
