@@ -37,6 +37,10 @@ target_sources(emmy_debugger
         src/debugger/hook_state.cpp
         src/debugger/extension_point.cpp
 
+        #src/vm
+        src/vm/vm_registry.cpp
+        src/vm/host_vm_registry.cpp
+
         #src/proto
         src/proto/proto.cpp
         src/proto/proto_handler.cpp
@@ -120,3 +124,16 @@ target_link_libraries(
         emmy_debugger
         PUBLIC uv_a
 )
+
+if(EMMY_VM_REGISTRY_TEST)
+    add_executable(emmy_vm_registry_test
+            ${emmy_SOURCE_DIR}/tests/vm_registry_test.cpp
+            src/vm/vm_registry.cpp
+            src/vm/host_vm_registry.cpp
+    )
+    target_include_directories(emmy_vm_registry_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include
+    )
+    set_target_properties(emmy_vm_registry_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME emmy_vm_registry_test COMMAND emmy_vm_registry_test)
+endif()

@@ -23,6 +23,7 @@
 #include "emmy_debugger/api/lua_api.h"
 #include "emmy_debugger/debugger/emmy_debugger_manager.h"
 #include "emmy_debugger/platform/lock.h"
+#include "emmy_debugger/vm/host_vm_registry.h"
 #include "proto/proto_handler.h"
 
 enum class LogType
@@ -92,6 +93,16 @@ public:
 
 	void OnReceiveMessage(nlohmann::json document);
 
+	uint64_t RegisterLuaVm(lua_State* L, const VmMetadata& metadata);
+	bool NotifyLuaVmReady(uint64_t registrationId);
+	bool BeginLuaVmClose(uint64_t registrationId, const std::string& reason);
+	bool EndLuaVmClose(uint64_t registrationId);
+	bool ReleaseLuaVmRegistration(uint64_t registrationId);
+	bool SetLuaVmDisplayName(uint64_t registrationId, const std::string& displayName);
+	bool ReconcileHostLuaVms();
+	NativeVmRegistry& GetVmRegistry();
+	HostVmRegistry& GetHostVmRegistry();
+
 	// Start hook 作为成员存在
 	std::function<void()> StartHook;
 
@@ -115,6 +126,8 @@ private:
 	ProtoHandler _protoHandler;
 
 	EmmyDebuggerManager _emmyDebuggerManager;
+	NativeVmRegistry _vmRegistry;
+	HostVmRegistry _hostVmRegistry;
 };
 
 

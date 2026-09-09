@@ -15,8 +15,33 @@
 */
 #include "emmy_debugger/debugger/emmy_debugger_lib.h"
 #include <cstring>
+#include <cstddef>
 #include "emmy_debugger/debugger/emmy_debugger.h"
 #include "emmy_debugger/emmy_facade.h"
+
+namespace {
+
+bool IsValidHostMetadata(const EmmyHostVmMetadata* metadata) {
+	return metadata != nullptr &&
+		metadata->size >= sizeof(uint32_t) * 2 &&
+		metadata->version == EMMY_HOST_API_VERSION;
+}
+
+bool HasHostMetadataField(const EmmyHostVmMetadata* metadata, std::size_t offset) {
+	return IsValidHostMetadata(metadata) &&
+		metadata->size >= offset + sizeof(const char*);
+}
+
+const char* ReadHostMetadataField(const EmmyHostVmMetadata* metadata, std::size_t offset) {
+	if (!HasHostMetadataField(metadata, offset)) {
+		return nullptr;
+	}
+	const char* const* field = reinterpret_cast<const char* const*>(
+		reinterpret_cast<const unsigned char*>(metadata) + offset);
+	return *field;
+}
+
+} // namespace
 
 // emmy.tcpListen(host: string, port: int): bool
 int tcpListen(struct lua_State* L)
@@ -224,3 +249,52 @@ std::string prepareEvalExpr(const std::string& eval)
 	}
 	return eval;
 }
+
+extern "C" {
+
+EMMY_HOST_API_EXPORT uint64_t EMMY_HOST_API_CALL Emmy_RegisterLuaVm(
+	lua_State* L, const EmmyHostVmMetadata* metadata) {
+	if (L == nullptr || (metadata != nullptr && !IsValidHostMetadata(metadata))) {
+		return 0;
+	}
+	VmMetadata internal;
+	if (metadata != nullptr) {
+		const char* displayName = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, displayName));
+		const char* engineName = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, engineName));
+		const char* engineContext = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, engineContext));
+		const char* luaVersionHint = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, luaVersionHint));
+		const char* runtimeModule = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, runtimeModule));
+		if (displayName != nullptr) internal.displayName = displayName;
+		if (engineName != nullptr) internal.engineName = engineName;
+		if (engineContext != nullptr) internal.engineContext = engineContext;
+		if (luaVersionHint != nullptr) internal.luaVersionHint = luaVersionHint;
+		if (runtimeModule != nullptr) internal.runtimeModule = runtimeModule;
+	}
+	return EmmyFacade::Get().RegisterLuaVm(L, internal);
+}
+
+EMMY_HOST_API_EXPORT int EMMY_HOST_API_CALL Emmy_NotifyLuaVmReady(uint64_t registrationId) {
+	return EmmyFacade::Get().NotifyLuaVmReady(registrationId) ? 1 : 0;
+}
+
+EMMY_HOST_API_EXPORT int EMMY_HOST_API_CALL Emmy_BeginLuaVmClose(
+	uint64_t registrationId, const char* reason) {
+	return EmmyFacade::Get().BeginLuaVmClose(
+		registrationId, reason == nullptr ? std::string() : std::string(reason)) ? 1 : 0;
+}
+
+EMMY_HOST_API_EXPORT int EMMY_HOST_API_CALL Emmy_EndLuaVmClose(uint64_t registrationId) {
+	return EmmyFacade::Get().EndLuaVmClose(registrationId) ? 1 : 0;
+}
+
+EMMY_HOST_API_EXPORT int EMMY_HOST_API_CALL Emmy_ReleaseLuaVmRegistration(uint64_t registrationId) {
+	return EmmyFacade::Get().ReleaseLuaVmRegistration(registrationId) ? 1 : 0;
+}
+
+EMMY_HOST_API_EXPORT int EMMY_HOST_API_CALL Emmy_SetLuaVmDisplayName(
+	uint64_t registrationId, const char* displayName) {
+	return EmmyFacade::Get().SetLuaVmDisplayName(
+		registrationId, displayName == nullptr ? std::string() : std::string(displayName)) ? 1 : 0;
+}
+
+} // extern "C"

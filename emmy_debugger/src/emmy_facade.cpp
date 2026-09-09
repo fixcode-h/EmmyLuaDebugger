@@ -258,11 +258,48 @@ void EmmyFacade::InitReq(InitParams & params) {
 
 	// fix 以上安全问题
 	StartDebug();
+	ReconcileHostLuaVms();
 }
 
 void EmmyFacade::ReadyReq() {
 	isIDEReady = true;
 	EMMY_COND_NOTIFY_ALL(waitIDECV);
+}
+
+uint64_t EmmyFacade::RegisterLuaVm(lua_State* L, const VmMetadata& metadata) {
+	return _hostVmRegistry.RegisterBeforeAgent(L, metadata);
+}
+
+bool EmmyFacade::NotifyLuaVmReady(uint64_t registrationId) {
+	return _hostVmRegistry.MarkReady(registrationId);
+}
+
+bool EmmyFacade::BeginLuaVmClose(uint64_t registrationId, const std::string& reason) {
+	return _hostVmRegistry.BeginClose(registrationId, reason);
+}
+
+bool EmmyFacade::EndLuaVmClose(uint64_t registrationId) {
+	return _hostVmRegistry.EndClose(registrationId);
+}
+
+bool EmmyFacade::ReleaseLuaVmRegistration(uint64_t registrationId) {
+	return _hostVmRegistry.Release(registrationId);
+}
+
+bool EmmyFacade::SetLuaVmDisplayName(uint64_t registrationId, const std::string& displayName) {
+	return _hostVmRegistry.SetDisplayName(registrationId, displayName);
+}
+
+bool EmmyFacade::ReconcileHostLuaVms() {
+	return _hostVmRegistry.ReconcileExistingVms(_vmRegistry);
+}
+
+NativeVmRegistry& EmmyFacade::GetVmRegistry() {
+	return _vmRegistry;
+}
+
+HostVmRegistry& EmmyFacade::GetHostVmRegistry() {
+	return _hostVmRegistry;
 }
 
 void EmmyFacade::OnReceiveMessage(nlohmann::json document) {
