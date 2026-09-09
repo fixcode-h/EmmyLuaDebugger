@@ -86,7 +86,7 @@ public:
 	void StartDebug();
 
 	// for hook
-	void StartupHookMode(int port);
+	bool StartupHookMode(int port);
 	void Attach(lua_State* L);
 
 	void SetWorkMode(WorkMode mode);

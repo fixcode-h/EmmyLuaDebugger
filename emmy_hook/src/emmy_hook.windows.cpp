@@ -432,7 +432,9 @@ int StartupHookMode(void* lpParam)
 	}
 	
 	const int pid = (int)GetCurrentProcessId();
-	EmmyFacade::Get().StartupHookMode(pid);
+	if (!EmmyFacade::Get().StartupHookMode(pid)) {
+		return 1;
+	}
 
 	if (lpParam != nullptr && ((RemoteThreadParam*)lpParam)->bRedirect)
 	{

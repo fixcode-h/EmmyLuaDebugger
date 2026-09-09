@@ -255,11 +255,13 @@ bool IsBeingInjected(DWORD processId, LPCSTR moduleFileName) {
 }
 
 bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture,
-	const std::string& authToken) {
+	const std::string& authToken, bool* alreadyAttached) {
 	if (IsBeingInjected(processId, dllFileName)) {
+		if (alreadyAttached != nullptr) *alreadyAttached = true;
 		MessageEvent("The process already attached.");
 		return true;
 	}
+	if (alreadyAttached != nullptr) *alreadyAttached = false;
 
 	MessageEvent("Start inject dll ...");
 	bool success = true;
@@ -321,7 +323,7 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 			GetExitCodeThread(thread, &exitCode);
 
 			CloseHandle(thread);
-			success = true;
+			success = exitCode == 0;
 			if (lpParam != nullptr) {
 				VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
 				lpParam = nullptr;

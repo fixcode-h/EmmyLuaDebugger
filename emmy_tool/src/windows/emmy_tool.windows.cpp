@@ -256,9 +256,18 @@ int EmmyTool::Attach() {
 	std::string dll = _cmd.Get<std::string>("dll");
 	std::string authToken = _cmd.Get<std::string>("auth-token");
 	auto capture = _cmd.Get<bool>("capture-log");
-	if (!InjectDll(pid, dir.c_str(), dll.c_str(), capture, authToken)) {
+	bool alreadyAttached = false;
+	if (!InjectDll(pid, dir.c_str(), dll.c_str(), capture, authToken, &alreadyAttached)) {
+		printf("{\"schemaVersion\":1,\"status\":\"error\",\"pid\":%d,\"injected\":false,\"listening\":false,\"authReady\":false}\n", pid);
 		return -1;
 	}
+	const bool authReady = !authToken.empty() && !alreadyAttached;
+	printf("{\"schemaVersion\":1,\"status\":\"%s\",\"pid\":%d,\"injected\":true,\"alreadyAttached\":%s,\"listening\":%s,\"authReady\":%s}\n",
+		alreadyAttached ? "already-attached" : (authReady ? "auth-ready" : "listening"),
+		pid,
+		alreadyAttached ? "true" : "false",
+		alreadyAttached ? "false" : "true",
+		authReady ? "true" : "false");
 
 	return 0;
 }

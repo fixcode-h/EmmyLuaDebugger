@@ -653,7 +653,7 @@ void EmmyFacade::StartDebug() {
 	readyHook = true;
 }
 
-void EmmyFacade::StartupHookMode(int port) {
+bool EmmyFacade::StartupHookMode(int port) {
 	// 只有在已经有 transporter 时才需要清理
 	// 首次调用时不需要 Destroy()，避免不必要的 mutex 操作
 	if (transporter) {
@@ -671,6 +671,7 @@ void EmmyFacade::StartupHookMode(int port) {
 		transporter = s;
 		// transporter->SetHandler(shared_from_this());
 	}
+	return suc;
 }
 
 void EmmyFacade::Attach(lua_State *L) {
