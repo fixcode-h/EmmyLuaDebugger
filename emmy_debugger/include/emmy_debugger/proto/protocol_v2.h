@@ -12,6 +12,7 @@
 
 std::string VmLifecycleStateName(VmLifecycleState state);
 std::string VmProtocolId(uint64_t registrationId);
+uint64_t ParseVmProtocolId(const nlohmann::json& value);
 
 nlohmann::json MakeV2Envelope(const std::string& kind,
 							 const std::string& type,
