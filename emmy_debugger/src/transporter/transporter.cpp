@@ -39,13 +39,17 @@ Transporter::Transporter(bool server):
 
 Transporter::~Transporter()
 {
+	Stop();
+	JoinEventLoop();
 	if (buf)
 	{
 		free(buf);
 	}
-	Stop();
-	if (thread.joinable())
-		thread.join();
+	if (loop != nullptr) {
+		uv_loop_close(loop);
+		delete loop;
+		loop = nullptr;
+	}
 }
 
 void Transporter::Send(int cmd, const nlohmann::json document)
@@ -60,11 +64,20 @@ void Transporter::Send(int cmd, const nlohmann::json document)
 
 void Transporter::OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf)
 {
+	if (buf == nullptr) {
+		return;
+	}
 	if (nread < 0)
 	{
 		/* Error or EOF */
 		free(buf->base);
-		uv_close(reinterpret_cast<uv_handle_t*>(handle), nullptr);
+		if (handle != nullptr) {
+			uv_read_stop(handle);
+			uv_handle_t* uvHandle = reinterpret_cast<uv_handle_t*>(handle);
+			if (!uv_is_closing(uvHandle)) {
+				uv_close(uvHandle, nullptr);
+			}
+		}
 
 		// on disconnect
 		OnDisconnect();
@@ -79,6 +92,7 @@ void Transporter::OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t
 	}
 
 	Receive(buf->base, nread);
+	free(buf->base);
 }
 
 void Transporter::Receive(const char* data, size_t len)
@@ -277,7 +291,20 @@ static void after_async(uv_handle_t* h)
 static void async_write(uv_async_t* h)
 {
 	auto* writeReq = (write_req_t*)h->data;
-	uv_write(&writeReq->req, writeReq->handler, &writeReq->buf, 1, after_write);
+	if (writeReq == nullptr || writeReq->handler == nullptr ||
+		uv_is_closing(reinterpret_cast<uv_handle_t*>(writeReq->handler))) {
+		if (writeReq != nullptr) {
+			free(writeReq->buf.base);
+			delete writeReq;
+		}
+		uv_close((uv_handle_t*)h, after_async);
+		return;
+	}
+	const int status = uv_write(&writeReq->req, writeReq->handler, &writeReq->buf, 1, after_write);
+	if (status < 0) {
+		free(writeReq->buf.base);
+		delete writeReq;
+	}
 	uv_close((uv_handle_t*)h, after_async);
 }
 
@@ -287,7 +314,7 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 		ProtocolError("outgoing_frame_too_large");
 		return;
 	}
-	if (!IsConnected())
+	if (!IsConnected() || handler == nullptr || data == nullptr)
 	{
 		return;
 	}
@@ -296,6 +323,7 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 	const int l1 = sprintf(cmdValue, "%d\n", cmd);
 	const size_t newLen = len + l1 + 1;
 	char* newData = static_cast<char*>(malloc(newLen));
+	if (newData == nullptr) return;
 	// line1
 	memcpy(newData, cmdValue, l1);
 	// line2
@@ -307,8 +335,18 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 	// thread safe:
 	auto* async = new uv_async_t;
 	async->data = writeReq;
-	uv_async_init(loop, async, async_write);
-	uv_async_send(async);
+	const int initStatus = uv_async_init(loop, async, async_write);
+	if (initStatus < 0) {
+		free(writeReq->buf.base);
+		delete writeReq;
+		delete async;
+		return;
+	}
+	if (uv_async_send(async) < 0) {
+		free(writeReq->buf.base);
+		delete writeReq;
+		if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(async))) uv_close(reinterpret_cast<uv_handle_t*>(async), after_async);
+	}
 }
 
 void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
@@ -317,12 +355,13 @@ void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
 		ProtocolError("outgoing_frame_too_large");
 		return;
 	}
-	if (!IsConnected())
+	if (!IsConnected() || handler == nullptr || data == nullptr)
 	{
 		return;
 	}
 	auto* writeReq = new write_req_t();
 	char* newData = static_cast<char*>(malloc(len));
+	if (newData == nullptr) return;
 
 	memcpy(newData, data, len);
 	writeReq->buf = uv_buf_init(newData, len);
@@ -331,13 +370,30 @@ void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
 	// thread safe:
 	auto* async = new uv_async_t;
 	async->data = writeReq;
-	uv_async_init(loop, async, async_write);
-	uv_async_send(async);
+	const int initStatus = uv_async_init(loop, async, async_write);
+	if (initStatus < 0) {
+		free(writeReq->buf.base);
+		delete writeReq;
+		delete async;
+		return;
+	}
+	if (uv_async_send(async) < 0) {
+		free(writeReq->buf.base);
+		delete writeReq;
+		if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(async))) uv_close(reinterpret_cast<uv_handle_t*>(async), after_async);
+	}
 }
 
 void Transporter::StartEventLoop()
 {
 	thread = std::thread(std::bind(&Transporter::Run, this));
+}
+
+void Transporter::JoinEventLoop()
+{
+	if (thread.joinable() && thread.get_id() != std::this_thread::get_id()) {
+		thread.join();
+	}
 }
 
 void Transporter::Run()

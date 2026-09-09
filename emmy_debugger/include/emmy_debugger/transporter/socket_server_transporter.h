@@ -20,6 +20,7 @@
 class SocketServerTransporter : public Transporter {
 	uv_tcp_t uvServer;
 	uv_stream_t* uvClient;
+	bool serverInitialized = false;
 public:
 	SocketServerTransporter();
 	~SocketServerTransporter();
@@ -30,4 +31,7 @@ private:
 	int Stop() override;
 	void Send(int cmd, const char* data, size_t len) override;
 	void OnDisconnect() override;
+	void CloseClient();
+	static void OnClientClosed(uv_handle_t* handle);
+	static void OnServerClosed(uv_handle_t* handle);
 };

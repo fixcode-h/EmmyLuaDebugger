@@ -72,8 +72,8 @@ std::string ProtocolSession::NextRequestId(const std::string& prefix) {
 	return stream.str();
 }
 
-bool ProtocolSession::AcceptIncomingEpoch(uint64_t epoch) const {
-	return epoch == 0 || epoch == ConnectionEpoch();
+bool ProtocolSession::AcceptIncomingEpoch(uint64_t epoch, bool allowLegacyEpoch) const {
+	return (allowLegacyEpoch && epoch == 0) || (epoch != 0 && epoch == ConnectionEpoch());
 }
 
 ProtocolSession::RequestDisposition ProtocolSession::BeginRequest(
@@ -83,7 +83,7 @@ ProtocolSession::RequestDisposition ProtocolSession::BeginRequest(
 	if (requestId.empty() || operationHash.empty()) {
 		return RequestDisposition::Invalid;
 	}
-	if (!AcceptIncomingEpoch(epoch)) {
+	if (!AcceptIncomingEpoch(epoch, false)) {
 		return RequestDisposition::StaleEpoch;
 	}
 	std::lock_guard<std::mutex> lock(requestMutex_);
@@ -106,7 +106,7 @@ void ProtocolSession::CompleteRequest(const std::string& requestId,
 	const std::string& operationHash,
 	const std::string& response,
 	uint64_t epoch) {
-	if (requestId.empty() || operationHash.empty() || !AcceptIncomingEpoch(epoch)) {
+	if (requestId.empty() || operationHash.empty() || !AcceptIncomingEpoch(epoch, false)) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(requestMutex_);

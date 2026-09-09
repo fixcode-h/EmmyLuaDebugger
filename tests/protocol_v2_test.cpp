@@ -39,6 +39,7 @@ int main() {
 	Require(session.ConnectionEpoch() == 2, "reconnect increments epoch");
 	Require(session.AgentSessionId() == sessionId, "session id survives reconnect");
 	Require(session.AcceptIncomingEpoch(0), "missing epoch is accepted for legacy-compatible requests");
+	Require(!session.AcceptIncomingEpoch(0, false), "v2 must carry an explicit epoch");
 	Require(session.AcceptIncomingEpoch(2), "current epoch is accepted");
 	Require(!session.AcceptIncomingEpoch(1), "old epoch is rejected");
 	const auto firstRequest = session.BeginRequest("r1", "hash-a", 2);
@@ -53,6 +54,12 @@ int main() {
 		"completed response can be replayed");
 	Require(session.BeginRequest("old", "hash", 1) == ProtocolSession::RequestDisposition::StaleEpoch,
 		"old epoch request is rejected");
+	session.OnDisconnect();
+	session.OnConnect(true);
+	Require(session.ConnectionEpoch() == 3, "second reconnect increments epoch");
+	Require(!session.CachedResponse("r1", "hash-a", cached), "old epoch cache is cleared");
+	Require(session.BeginRequest("r1", "hash-a", 3) == ProtocolSession::RequestDisposition::New,
+		"request id can be reused after reconnect");
 
 	TransportAuth auth;
 	Require(!auth.IsRequired(), "auth is optional before a token is configured");
@@ -60,6 +67,11 @@ int main() {
 	Require(auth.IsRequired(), "configured auth token is required");
 	Require(auth.Verify("token-123"), "matching token is accepted");
 	Require(auth.VerifyForEpoch("token-123", 2), "matching token authenticates epoch");
+	Require(auth.IsAuthenticatedForEpoch(2), "epoch authentication is recorded");
+	auth.BeginEpoch(3);
+	Require(!auth.IsAuthenticatedForEpoch(3), "reconnect starts unauthenticated");
+	Require(!auth.VerifyForEpoch("token-123", 0), "token auth rejects epoch zero");
+	Require(auth.VerifyForEpoch("token-123", 3), "reconnect requires fresh token verification");
 	Require(!auth.Verify("token-124"), "wrong token is rejected");
 	Require(!auth.Verify("token-123-extra"), "length mismatch is rejected");
 
@@ -69,7 +81,7 @@ int main() {
 	Require(ready["cmd"] == 18, "ready envelope command");
 	Require(ready["protocolVersion"] == 2, "ready protocol version");
 	Require(ready["type"] == "agent.ready", "ready envelope type");
-	Require(ready["connectionEpoch"] == 2, "ready connection epoch");
+	Require(ready["connectionEpoch"] == 3, "ready connection epoch");
 	Require(ready["payload"]["snapshotEventSeq"] == 3, "ready snapshot sequence");
 
 	VmMetadata metadata;

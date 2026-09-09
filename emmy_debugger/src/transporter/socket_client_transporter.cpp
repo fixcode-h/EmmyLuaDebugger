@@ -43,21 +43,35 @@ SocketClientTransporter::SocketClientTransporter():
 }
 
 SocketClientTransporter::~SocketClientTransporter() {
+	Stop();
+	JoinEventLoop();
+	if (loop != nullptr) uv_run(loop, UV_RUN_DEFAULT);
 }
 
 int SocketClientTransporter::Stop() {
 	Transporter::Stop();
-	if (IsConnected()) {
+	if (clientInitialized) {
 		uv_read_stop((uv_stream_t*)&uvClient);
-		uv_close((uv_handle_t*)&uvClient, nullptr);
+		if (!uv_is_closing((uv_handle_t*)&uvClient)) {
+			uv_close((uv_handle_t*)&uvClient, OnClientClosed);
+		}
 	}
 	EMMY_COND_NOTIFY_ALL(cv);
 	return 0;
 }
 
 bool SocketClientTransporter::Connect(const std::string& host, int port, std::string& err) {
+	if (clientInitialized) {
+		err = "socket client is already connected or closing";
+		return false;
+	}
+	connectionNotified = false;
 	uvClient.data = this;
-	uv_tcp_init(loop, &uvClient);
+	if (uv_tcp_init(loop, &uvClient) != 0) {
+		err = "failed to initialize socket client";
+		return false;
+	}
+	clientInitialized = true;
 	struct sockaddr_storage addr;
 	bool addr_suc = ParseSocketAddress(host, port, &addr, err);
 	if (!addr_suc) {
@@ -83,7 +97,10 @@ void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
 	this->connectionStatus = status;
 	if (status >= 0) {
 		OnConnect(true);
-		uv_read_start((uv_stream_t*)&uvClient, echo_alloc, after_read);
+		if (uv_read_start((uv_stream_t*)&uvClient, echo_alloc, after_read) != 0) {
+			Stop();
+			OnDisconnect();
+		}
 	}
 	else {
 		Stop();
@@ -95,4 +112,9 @@ void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
 
 void SocketClientTransporter::Send(int cmd, const char* data, size_t len) {
 	Transporter::Send((uv_stream_t*)&uvClient, cmd, data, len);
+}
+
+void SocketClientTransporter::OnClientClosed(uv_handle_t* handle) {
+	auto* self = static_cast<SocketClientTransporter*>(handle->data);
+	if (self != nullptr) self->clientInitialized = false;
 }

@@ -27,6 +27,7 @@ class SocketClientTransporter : public Transporter {
 	EmmyCondVar cv = EMMY_CONDVAR_INIT;
 	int connectionStatus = 0;
 	bool connectionNotified = false;
+	bool clientInitialized = false;
 public:
 	SocketClientTransporter();
 	~SocketClientTransporter();
@@ -35,4 +36,5 @@ public:
 	int Stop() override;
 	void Send(int cmd, const char* data, size_t len) override;
 	void OnConnection(uv_connect_t* req, int status);
+	static void OnClientClosed(uv_handle_t* handle);
 };

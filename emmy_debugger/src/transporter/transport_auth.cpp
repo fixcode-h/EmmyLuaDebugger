@@ -40,6 +40,9 @@ bool TransportAuth::VerifyForEpoch(const std::string& token, uint64_t connection
 	if (expectedToken_.empty()) {
 		return true;
 	}
+	if (connectionEpoch == 0) {
+		return false;
+	}
 	const std::size_t maxLength = std::max(expectedToken_.size(), token.size());
 	unsigned int difference = expectedToken_.size() == token.size() ? 0u : 1u;
 	for (std::size_t i = 0; i < maxLength; ++i) {
@@ -56,6 +59,17 @@ bool TransportAuth::VerifyForEpoch(const std::string& token, uint64_t connection
 		authenticatedEpoch_ = connectionEpoch;
 	}
 	return true;
+}
+
+void TransportAuth::BeginEpoch(uint64_t connectionEpoch) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	authenticatedEpoch_ = 0;
+	if (expectedToken_.empty()) authenticatedEpoch_ = connectionEpoch;
+}
+
+bool TransportAuth::IsAuthenticatedForEpoch(uint64_t connectionEpoch) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return expectedToken_.empty() || (connectionEpoch != 0 && authenticatedEpoch_ == connectionEpoch);
 }
 
 void TransportAuth::ClearAuthenticatedEpoch() {

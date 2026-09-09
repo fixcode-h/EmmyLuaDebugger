@@ -38,19 +38,23 @@ PipelineClientTransporter::PipelineClientTransporter(): Transporter(false) {
 }
 
 PipelineClientTransporter::~PipelineClientTransporter() {
-
+	Stop();
+	JoinEventLoop();
+	if (loop != nullptr) uv_run(loop, UV_RUN_DEFAULT);
 }
 
 int PipelineClientTransporter::Stop() {
 	Transporter::Stop();
-	if (IsConnected()) {
+	if (clientInitialized) {
 		uv_read_stop((uv_stream_t*)&uvClient);
-		uv_close((uv_handle_t*)&uvClient, nullptr);
+		if (!uv_is_closing((uv_handle_t*)&uvClient)) uv_close((uv_handle_t*)&uvClient, OnClientClosed);
 	}
 	return 0;
 }
 
 bool PipelineClientTransporter::Connect(const std::string& name, std::string& err) {
+	if (clientInitialized) { err = "pipe client is already connected or closing"; return false; }
+	connectionNotified = false;
 	std::string fullName;
 #ifdef _WIN32
 	{
@@ -72,6 +76,7 @@ bool PipelineClientTransporter::Connect(const std::string& name, std::string& er
 	const auto req = (uv_connect_t*)malloc(sizeof(uv_connect_t));
 	req->data = this;
 	uv_pipe_init(loop, &uvClient, 0);
+	clientInitialized = true;
 	uv_pipe_connect(req, &uvClient, fullName.c_str(), onPipeConnectionCB);
 	StartEventLoop();
 
@@ -96,4 +101,10 @@ void PipelineClientTransporter::OnPipeConnection(uv_connect_t* pipe, int status)
 	}
 	connectionNotified = true;
 	EMMY_COND_NOTIFY_ALL(cv);
+	free(pipe);
+}
+
+void PipelineClientTransporter::OnClientClosed(uv_handle_t* handle) {
+	auto* self = static_cast<PipelineClientTransporter*>(handle->data);
+	if (self != nullptr) self->clientInitialized = false;
 }

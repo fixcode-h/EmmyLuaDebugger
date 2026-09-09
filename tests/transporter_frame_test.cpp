@@ -1,7 +1,10 @@
 #include "emmy_debugger/transporter/transporter.h"
+#include "emmy_debugger/transporter/socket_client_transporter.h"
+#include "emmy_debugger/transporter/socket_server_transporter.h"
 #include "nlohmann/json.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -49,6 +52,18 @@ void Require(bool condition, const char* message) {
 } // namespace
 
 int main() {
+	TestTransporter readBuffer;
+	uv_buf_t allocated = uv_buf_init(static_cast<char*>(malloc(3)), 3);
+	memcpy(allocated.base, "13\n", 3);
+	readBuffer.OnAfterRead(nullptr, 3, &allocated);
+	Require(readBuffer.messages.empty(), "partial command read is buffered and buffer is released");
+	SocketServerTransporter serverLifecycle;
+	Require(static_cast<Transporter&>(serverLifecycle).Stop() == 0, "server stop is safe before listen");
+	Require(static_cast<Transporter&>(serverLifecycle).Stop() == 0, "server stop is idempotent");
+	SocketClientTransporter clientLifecycle;
+	Require(clientLifecycle.Stop() == 0, "client stop is safe before connect");
+	Require(clientLifecycle.Stop() == 0, "client stop is idempotent");
+
 	TestTransporter split;
 	split.SetMaxFrameSize(64);
 	split.Receive("13\n", 3);

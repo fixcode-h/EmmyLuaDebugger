@@ -43,11 +43,22 @@ SocketServerTransporter::SocketServerTransporter() : Transporter(true), uvServer
 }
 
 SocketServerTransporter::~SocketServerTransporter() {
+	Stop();
+	JoinEventLoop();
+	if (loop != nullptr) uv_run(loop, UV_RUN_DEFAULT);
 }
 
 bool SocketServerTransporter::Listen(const std::string& host, int port, std::string& err) {
 	uvServer.data = this;
-	uv_tcp_init(loop, &uvServer);
+	if (serverInitialized) {
+		err = "socket server is already listening";
+		return false;
+	}
+	if (uv_tcp_init(loop, &uvServer) != 0) {
+		err = "failed to initialize socket server";
+		return false;
+	}
+	serverInitialized = true;
 	struct sockaddr_storage addr;
 	bool addr_suc = ParseSocketAddress(host, port, &addr, err);
 	if (!addr_suc) {
@@ -70,12 +81,11 @@ void SocketServerTransporter::Send(const char* data, size_t len)
 }
 
 int SocketServerTransporter::Stop() {
-	uv_close((uv_handle_t*)&uvServer, nullptr);
-	if (uvClient) {
-		uv_read_stop(uvClient);
-		uv_close((uv_handle_t*)uvClient, nullptr);
-	}
 	Transporter::Stop();
+	CloseClient();
+	if (serverInitialized && !uv_is_closing((uv_handle_t*)&uvServer)) {
+		uv_close((uv_handle_t*)&uvServer, OnServerClosed);
+	}
 	return 0;
 }
 
@@ -83,18 +93,21 @@ int SocketServerTransporter::Stop() {
 // new connection & read
 
 void SocketServerTransporter::OnNewConnection(uv_stream_t* server, int status) {
-	// todo: free prev client
+	if (status < 0) return;
+	CloseClient();
+	if (IsConnected()) OnDisconnect();
 	uvClient = static_cast<uv_stream_t*>(malloc(sizeof(uv_tcp_t)));
+	if (uvClient == nullptr) return;
 	uvClient->data = this;
 
 	int r = uv_tcp_init(loop, reinterpret_cast<uv_tcp_t*>(uvClient));
-	assert(r == 0);
+	if (r != 0) { free(uvClient); uvClient = nullptr; return; }
 
 	r = uv_accept(server, uvClient);
-	assert(r == 0);
+	if (r != 0) { uv_close((uv_handle_t*)uvClient, OnClientClosed); return; }
 
 	r = uv_read_start(uvClient, echo_alloc, after_read);
-	assert(r == 0);
+	if (r != 0) { uv_close((uv_handle_t*)uvClient, OnClientClosed); return; }
 
 	OnConnect(true);
 }
@@ -108,8 +121,27 @@ void SocketServerTransporter::Send(int cmd, const char* data, size_t len) {
 
 void SocketServerTransporter::OnDisconnect() {
 	Transporter::OnDisconnect();
-    
-    uv_read_stop((uv_stream_t*)uvClient);
-    // todo: free uvClient
-    uvClient = nullptr;
+	CloseClient();
+}
+
+void SocketServerTransporter::CloseClient() {
+	if (uvClient == nullptr) return;
+	uv_stream_t* client = uvClient;
+	uv_read_stop(client);
+	if (!uv_is_closing((uv_handle_t*)client)) {
+		uv_close((uv_handle_t*)client, OnClientClosed);
+	}
+}
+
+void SocketServerTransporter::OnClientClosed(uv_handle_t* handle) {
+	auto* self = static_cast<SocketServerTransporter*>(handle->data);
+	if (self != nullptr && self->uvClient == reinterpret_cast<uv_stream_t*>(handle)) {
+		self->uvClient = nullptr;
+	}
+	free(handle);
+}
+
+void SocketServerTransporter::OnServerClosed(uv_handle_t* handle) {
+	auto* self = static_cast<SocketServerTransporter*>(handle->data);
+	if (self != nullptr) self->serverInitialized = false;
 }

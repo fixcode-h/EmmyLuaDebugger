@@ -67,7 +67,7 @@ class Transporter {
 	size_t receiveSize;
 	bool readHead;
 	bool running;
-	bool connected;
+	std::atomic<bool> connected;
 	bool serverMode;
 	size_t maxFrameSize;
 	std::atomic<bool> disconnectNotified;
@@ -96,6 +96,7 @@ protected:
 	virtual void OnProtocolError(const std::string& reason);
 	void ProtocolError(const char* reason);
 	void StartEventLoop();
+	void JoinEventLoop();
 	void Run();
 	virtual void OnDisconnect();
 	virtual void OnConnect(bool suc);

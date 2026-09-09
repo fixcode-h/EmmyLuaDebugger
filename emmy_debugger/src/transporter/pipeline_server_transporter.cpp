@@ -41,7 +41,9 @@ PipelineServerTransporter::PipelineServerTransporter():
 }
 
 PipelineServerTransporter::~PipelineServerTransporter() {
-
+	Stop();
+	JoinEventLoop();
+	if (loop != nullptr) uv_run(loop, UV_RUN_DEFAULT);
 }
 
 bool PipelineServerTransporter::pipe(const std::string& name, std::string& err) {
@@ -66,7 +68,9 @@ bool PipelineServerTransporter::pipe(const std::string& name, std::string& err) 
     }
 #endif
 	uvServer.data = this;
-	uv_pipe_init(loop, &uvServer, 0);
+	if (serverInitialized) { err = "pipe server is already listening"; return false; }
+	if (uv_pipe_init(loop, &uvServer, 0) != 0) { err = "failed to initialize pipe server"; return false; }
+	serverInitialized = true;
 	int r = uv_pipe_bind(&uvServer, fullName.c_str());
 	if (r) {
 		err = uv_err_name(r);
@@ -83,11 +87,8 @@ bool PipelineServerTransporter::pipe(const std::string& name, std::string& err) 
 
 int PipelineServerTransporter::Stop() {
 	Transporter::Stop();
-	uv_close((uv_handle_t*)&uvServer, nullptr);
-	if (uvClient) {
-		uv_read_stop((uv_stream_t*)&uvClient);
-		uv_close((uv_handle_t*)uvClient, nullptr);
-	}
+	CloseClient();
+	if (serverInitialized && !uv_is_closing((uv_handle_t*)&uvServer)) uv_close((uv_handle_t*)&uvServer, OnServerClosed);
 	return 0;
 }
 
@@ -100,13 +101,33 @@ void PipelineServerTransporter::OnPipeConnection(uv_stream_t* pipe, int status) 
 		Stop();
 	}
 	else {
-        // todo: close prev uvClient
+		CloseClient();
+		if (IsConnected()) OnDisconnect();
 		uvClient = (uv_pipe_t*)malloc(sizeof(uv_pipe_t));
+		if (uvClient == nullptr) return;
 		uv_pipe_init(loop, uvClient, 0);
 		uvClient->data = this;
 		const int r = uv_accept((uv_stream_t*)&uvServer, (uv_stream_t*)uvClient);
-		assert(r == 0);
+		if (r != 0) { uv_close((uv_handle_t*)uvClient, OnClientClosed); return; }
 		OnConnect(true);
-		uv_read_start((uv_stream_t*)uvClient, echo_alloc, after_read);
+		if (uv_read_start((uv_stream_t*)uvClient, echo_alloc, after_read) != 0) OnDisconnect();
 	}
+}
+
+void PipelineServerTransporter::CloseClient() {
+	if (uvClient == nullptr) return;
+	uv_pipe_t* client = uvClient;
+	uv_read_stop((uv_stream_t*)client);
+	if (!uv_is_closing((uv_handle_t*)client)) uv_close((uv_handle_t*)client, OnClientClosed);
+}
+
+void PipelineServerTransporter::OnClientClosed(uv_handle_t* handle) {
+	auto* self = static_cast<PipelineServerTransporter*>(handle->data);
+	if (self != nullptr && self->uvClient == reinterpret_cast<uv_pipe_t*>(handle)) self->uvClient = nullptr;
+	free(handle);
+}
+
+void PipelineServerTransporter::OnServerClosed(uv_handle_t* handle) {
+	auto* self = static_cast<PipelineServerTransporter*>(handle->data);
+	if (self != nullptr) self->serverInitialized = false;
 }

@@ -232,6 +232,10 @@ int EmmyFacade::BreakHere(lua_State *L) {
 int EmmyFacade::OnConnect(bool suc) {
 	_protocolSession.OnConnect(suc);
 	if (suc) {
+		_transportAuth.BeginEpoch(_protocolSession.ConnectionEpoch());
+		_authenticated.store(false, std::memory_order_release);
+	} else {
+		_transportAuth.ClearAuthenticatedEpoch();
 		_authenticated.store(false, std::memory_order_release);
 	}
 	return 0;
@@ -447,7 +451,7 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 			0, nlohmann::json(), false, error));
 		return;
 	}
-	if (!_protocolSession.AcceptIncomingEpoch(incomingEpoch)) {
+	if (!_protocolSession.AcceptIncomingEpoch(incomingEpoch, false)) {
 		nlohmann::json error = nlohmann::json::object();
 		error["code"] = "STALE_CONNECTION_EPOCH";
 		error["message"] = "request belongs to an old connection epoch";

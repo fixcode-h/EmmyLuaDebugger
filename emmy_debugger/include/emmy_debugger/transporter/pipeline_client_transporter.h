@@ -25,6 +25,7 @@ class PipelineClientTransporter : public Transporter {
 	EmmyMutex mutex = EMMY_MUTEX_INIT;
 	EmmyCondVar cv = EMMY_CONDVAR_INIT;
 	bool connectionNotified = false;
+	bool clientInitialized = false;
 public:
 	PipelineClientTransporter();
 	~PipelineClientTransporter();
@@ -33,4 +34,5 @@ public:
 	int Stop() override;
 	void Send(int cmd, const char* data, size_t len) override;
 	void OnPipeConnection(uv_connect_t* req, int status);
+	static void OnClientClosed(uv_handle_t* handle);
 };

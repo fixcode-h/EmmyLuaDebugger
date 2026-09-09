@@ -36,7 +36,7 @@ public:
 	bool IsNegotiated() const;
 	bool IsReady() const;
 	std::string NextRequestId(const std::string& prefix);
-	bool AcceptIncomingEpoch(uint64_t epoch) const;
+	bool AcceptIncomingEpoch(uint64_t epoch, bool allowLegacyEpoch = true) const;
 	RequestDisposition BeginRequest(const std::string& requestId,
 									const std::string& operationHash,
 									uint64_t epoch);

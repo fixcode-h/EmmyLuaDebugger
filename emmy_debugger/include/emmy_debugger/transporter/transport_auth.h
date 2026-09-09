@@ -14,6 +14,8 @@ public:
 	// Verifies the token and records the connection epoch that authenticated it.
 	// The same attach token may be reused by a reconnect of the same Agent.
 	bool VerifyForEpoch(const std::string& token, uint64_t connectionEpoch);
+	void BeginEpoch(uint64_t connectionEpoch);
+	bool IsAuthenticatedForEpoch(uint64_t connectionEpoch) const;
 	void ClearAuthenticatedEpoch();
 
 private:
