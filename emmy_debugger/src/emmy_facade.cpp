@@ -26,6 +26,23 @@
 #include "emmy_debugger/debugger/emmy_debugger_lib.h"
 #include "emmy_debugger/transporter/transporter.h"
 #include "emmy_debugger/api/lua_version.h"
+#ifdef _WIN32
+#include <Windows.h>
+#else
+#include <unistd.h>
+#endif
+
+namespace {
+
+uint64_t CurrentProcessIdValue() {
+#ifdef _WIN32
+	return static_cast<uint64_t>(GetCurrentProcessId());
+#else
+	return static_cast<uint64_t>(getpid());
+#endif
+}
+
+} // namespace
 
 EmmyFacade &EmmyFacade::Get() {
 	static EmmyFacade instance;
@@ -67,6 +84,9 @@ EmmyFacade::EmmyFacade()
 	  workMode(WorkMode::EmmyCore),
 	  readyHook(false),
 	  _protoHandler(this) {
+	_vmRegistry.SetEventSink([this](const VmLifecycleEvent& event) {
+		OnVmLifecycleEvent(event);
+	});
 }
 
 EmmyFacade::~EmmyFacade() {
@@ -97,6 +117,7 @@ bool EmmyFacade::TcpListen(lua_State *L, const std::string &host, int port, std:
 	_emmyDebuggerManager.AddDebugger(L);
 
 	SetReadyHook(L);
+	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto s = std::make_shared<SocketServerTransporter>();
 	transporter = s;
@@ -117,6 +138,7 @@ bool EmmyFacade::TcpSharedListen(lua_State *L, const std::string &host, int port
 	if (_emmyDebuggerManager.GetDebugger(L) == nullptr) {
 		_emmyDebuggerManager.AddDebugger(L);
 		SetReadyHook(L);
+		RegisterFallbackLuaVm(L, "EMMY_CORE");
 	}
 	return true;
 }
@@ -127,6 +149,7 @@ bool EmmyFacade::TcpConnect(lua_State *L, const std::string &host, int port, std
 	_emmyDebuggerManager.AddDebugger(L);
 
 	SetReadyHook(L);
+	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto c = std::make_shared<SocketClientTransporter>();
 	transporter = c;
@@ -148,6 +171,7 @@ bool EmmyFacade::PipeListen(lua_State *L, const std::string &name, std::string &
 	_emmyDebuggerManager.AddDebugger(L);
 
 	SetReadyHook(L);
+	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto p = std::make_shared<PipelineServerTransporter>();
 	transporter = p;
@@ -162,6 +186,7 @@ bool EmmyFacade::PipeConnect(lua_State *L, const std::string &name, std::string 
 	_emmyDebuggerManager.AddDebugger(L);
 
 	SetReadyHook(L);
+	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto p = std::make_shared<PipelineClientTransporter>();
 	transporter = p;
@@ -203,12 +228,14 @@ int EmmyFacade::BreakHere(lua_State *L) {
 }
 
 int EmmyFacade::OnConnect(bool suc) {
+	_protocolSession.OnConnect(suc);
 	return 0;
 }
 
 int EmmyFacade::OnDisconnect() {
 	isIDEReady = false;
 	isWaitingForIDE = false;
+	_protocolSession.OnDisconnect();
 
 	_emmyDebuggerManager.OnDisconnect();
 
@@ -240,6 +267,7 @@ WorkMode EmmyFacade::GetWorkMode() {
 
 
 void EmmyFacade::InitReq(InitParams & params) {
+	_protocolSession.MarkNegotiated();
 	if (StartHook) {
 		StartHook();
 	}
@@ -259,11 +287,19 @@ void EmmyFacade::InitReq(InitParams & params) {
 	// fix 以上安全问题
 	StartDebug();
 	ReconcileHostLuaVms();
+	SendInitResponse();
 }
 
 void EmmyFacade::ReadyReq() {
+	_protocolSession.MarkReady();
 	isIDEReady = true;
 	EMMY_COND_NOTIFY_ALL(waitIDECV);
+	const VmRegistrySnapshot snapshot = _vmRegistry.SnapshotWithEventSeq();
+	SendReadyResponse(snapshot.eventSeq);
+	SendV2Document(MakeVmSnapshotEnvelope(
+		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
+		snapshot.records, snapshot.eventSeq));
+	FlushPendingV2Events(snapshot.eventSeq);
 }
 
 uint64_t EmmyFacade::RegisterLuaVm(lua_State* L, const VmMetadata& metadata) {
@@ -290,6 +326,30 @@ bool EmmyFacade::SetLuaVmDisplayName(uint64_t registrationId, const std::string&
 	return _hostVmRegistry.SetDisplayName(registrationId, displayName);
 }
 
+uint64_t EmmyFacade::RegisterFallbackLuaVm(lua_State* L, const std::string& discovery) {
+	if (L == nullptr) {
+		return 0;
+	}
+	VmMetadata metadata;
+	metadata.displayName = "Lua VM";
+	metadata.discovery = discovery;
+	switch (luaVersion) {
+		case LuaVersion::LUA_JIT: metadata.luaVersionHint = "LuaJIT"; break;
+		case LuaVersion::LUA_51: metadata.luaVersionHint = "5.1"; break;
+		case LuaVersion::LUA_52: metadata.luaVersionHint = "5.2"; break;
+		case LuaVersion::LUA_53: metadata.luaVersionHint = "5.3"; break;
+		case LuaVersion::LUA_54: metadata.luaVersionHint = "5.4"; break;
+		default: metadata.luaVersionHint = "unknown"; break;
+	}
+	lua_State* mainState = GetMainState(L);
+	if (mainState == nullptr) mainState = L;
+	const uint64_t registrationId = RegisterLuaVm(mainState, metadata);
+	if (registrationId != 0) {
+		NotifyLuaVmReady(registrationId);
+	}
+	return registrationId;
+}
+
 bool EmmyFacade::ReconcileHostLuaVms() {
 	return _hostVmRegistry.ReconcileExistingVms(_vmRegistry);
 }
@@ -304,6 +364,124 @@ HostVmRegistry& EmmyFacade::GetHostVmRegistry() {
 
 void EmmyFacade::OnReceiveMessage(nlohmann::json document) {
 	_protoHandler.OnDispatch(document);
+}
+
+void EmmyFacade::OnV2Envelope(nlohmann::json document) {
+	if (!document["protocolVersion"].is_number_integer() ||
+		document["protocolVersion"].get<int>() != 2) {
+		return;
+	}
+	const std::string type = document["type"].is_string()
+		? document["type"].get<std::string>() : std::string();
+	const std::string kind = document["kind"].is_string()
+		? document["kind"].get<std::string>() : std::string();
+	const std::string requestId = document["requestId"].is_string()
+		? document["requestId"].get<std::string>() : std::string();
+
+	if (kind == "request" && type == "vm.snapshot") {
+		BuildAndSendVmSnapshot(requestId);
+		return;
+	}
+
+	if (kind == "request" && type == "agent.describe") {
+		nlohmann::json payload = nlohmann::json::object();
+		payload["agentSessionId"] = _protocolSession.AgentSessionId();
+		payload["protocolVersion"] = 2;
+		payload["processId"] = CurrentProcessIdValue();
+		payload["capabilities"] = nlohmann::json::array({
+			"vm.lifecycle", "vm.snapshot", "debug.legacy-v1"
+		});
+		SendV2Document(MakeV2Envelope(
+			"response", "agent.describe", _protocolSession.AgentSessionId(),
+			_protocolSession.ConnectionEpoch(), requestId, 0, payload));
+		return;
+	}
+	if (kind != "request") {
+		return;
+	}
+
+	nlohmann::json error = nlohmann::json::object();
+	error["code"] = "CAPABILITY_UNSUPPORTED";
+	error["message"] = "Unsupported Emmy v2 request";
+	error["retryable"] = false;
+	SendV2Document(MakeV2Envelope(
+		"response", type.empty() ? "unknown" : type, _protocolSession.AgentSessionId(),
+		_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+}
+
+void EmmyFacade::OnVmLifecycleEvent(const VmLifecycleEvent& event) {
+	const nlohmann::json document = MakeVmLifecycleEnvelope(
+		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), event);
+	if (_protocolSession.IsReady() && transporter != nullptr && transporter->IsConnected()) {
+		SendV2Document(document);
+	} else {
+		QueueV2Event(event);
+	}
+}
+
+void EmmyFacade::SendV2Document(const nlohmann::json& document) {
+	if (transporter != nullptr && transporter->IsConnected()) {
+		transporter->Send(static_cast<int>(MessageCMD::EnvelopeV2), document);
+	}
+}
+
+void EmmyFacade::QueueV2Event(const VmLifecycleEvent& event) {
+	std::lock_guard<std::mutex> lock(_v2EventMutex);
+	if (_pendingV2Events.size() >= 256) {
+		_pendingV2Events.pop_front();
+	}
+	_pendingV2Events.push_back(PendingV2Event{event});
+}
+
+uint64_t EmmyFacade::BuildAndSendVmSnapshot(const std::string& requestId) {
+	const VmRegistrySnapshot snapshot = _vmRegistry.SnapshotWithEventSeq();
+	SendV2Document(MakeVmSnapshotEnvelope(
+		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
+		snapshot.records, snapshot.eventSeq, requestId));
+	return snapshot.eventSeq;
+}
+
+void EmmyFacade::FlushPendingV2Events(uint64_t snapshotEventSeq) {
+	std::deque<PendingV2Event> pending;
+	{
+		std::lock_guard<std::mutex> lock(_v2EventMutex);
+		pending.swap(_pendingV2Events);
+	}
+	for (std::deque<PendingV2Event>::const_iterator it = pending.begin(); it != pending.end(); ++it) {
+		if (it->event.eventSeq <= snapshotEventSeq) {
+			continue;
+		}
+		SendV2Document(MakeVmLifecycleEnvelope(
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), it->event));
+	}
+}
+
+void EmmyFacade::SendInitResponse() {
+	nlohmann::json response = nlohmann::json::object();
+	response["cmd"] = static_cast<int>(MessageCMD::InitRsp);
+	response["version"] = "2";
+	response["protocolVersion"] = 2;
+	response["agentSessionId"] = _protocolSession.AgentSessionId();
+	response["connectionEpoch"] = _protocolSession.ConnectionEpoch();
+	response["processId"] = CurrentProcessIdValue();
+	response["capabilities"] = nlohmann::json::array({
+		"vm.lifecycle", "vm.snapshot", "debug.legacy-v1"
+	});
+	if (transporter != nullptr) {
+		transporter->Send(static_cast<int>(MessageCMD::InitRsp), response);
+	}
+}
+
+void EmmyFacade::SendReadyResponse(uint64_t snapshotEventSeq) {
+	nlohmann::json response = nlohmann::json::object();
+	response["cmd"] = static_cast<int>(MessageCMD::ReadyRsp);
+	response["protocolVersion"] = 2;
+	response["agentSessionId"] = _protocolSession.AgentSessionId();
+	response["connectionEpoch"] = _protocolSession.ConnectionEpoch();
+	response["snapshotEventSeq"] = snapshotEventSeq;
+	if (transporter != nullptr) {
+		transporter->Send(static_cast<int>(MessageCMD::ReadyRsp), response);
+	}
 }
 
 bool EmmyFacade::OnBreak(std::shared_ptr<Debugger> debugger) {
@@ -350,6 +528,13 @@ void EmmyFacade::SendLog(LogType type, const char *fmt, ...) {
 }
 
 void EmmyFacade::OnLuaStateGC(lua_State *L) {
+	auto vmRecord = _hostVmRegistry.FindByState(L);
+	if (vmRecord) {
+		BeginLuaVmClose(vmRecord->id, "lua-state-gc");
+		EndLuaVmClose(vmRecord->id);
+		ReleaseLuaVmRegistration(vmRecord->id);
+	}
+
 	auto debugger = _emmyDebuggerManager.RemoveDebugger(L);
 
 	if (debugger) {
@@ -384,6 +569,9 @@ void EmmyFacade::Hook(lua_State *L, lua_Debug *ar) {
 		if (workMode == WorkMode::Attach) {
 			debugger = _emmyDebuggerManager.AddDebugger(L);
 			install_emmy_debugger(L);
+
+			RegisterFallbackLuaVm(L, "HOOK_FALLBACK");
+
 			if (_emmyDebuggerManager.IsRunning()) {
 				debugger->Start();
 				debugger->Attach();
@@ -392,7 +580,9 @@ void EmmyFacade::Hook(lua_State *L, lua_Debug *ar) {
 			auto obj = nlohmann::json::object();
 			obj["state"] = reinterpret_cast<int64_t>(L);
 
-			this->transporter->Send(int(MessageCMD::AttachedNotify), obj);
+			if (this->transporter) {
+				this->transporter->Send(int(MessageCMD::AttachedNotify), obj);
+			}
 
 			debugger->Hook(ar, L);
 		}

@@ -52,6 +52,8 @@ int main() {
 	Require(registry.EndClose(id), "EndClose is idempotent");
 	Require(registry.FindByState(state) == nullptr, "closed state leaves active index");
 	Require(registry.Snapshot().empty(), "closed VM is absent from active snapshot");
+	Require(registry.SnapshotWithEventSeq().eventSeq >= 4,
+	        "empty snapshot keeps the lifecycle event fence");
 	Require(registry.Release(id), "closed VM can be released");
 	Require(registry.Release(id), "Release is idempotent");
 

@@ -15,6 +15,7 @@ public:
 	bool EndClose(uint64_t registrationId);
 	bool Release(uint64_t registrationId);
 	bool SetDisplayName(uint64_t registrationId, const std::string& displayName);
+	std::shared_ptr<const VmRecord> FindByState(lua_State* mainState) const;
 
 	// Activates routing and reconciles all records that were created before the
 	// Agent handshake. Repeated calls are idempotent for the same destination.

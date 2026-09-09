@@ -21,36 +21,39 @@
 
 class EmmyFacade;
 
-enum class MessageCMD {
-	Unknown,
+enum class MessageCMD : int {
+	Unknown = 0,
 
-	InitReq,
-	InitRsp,
+	InitReq = 1,
+	InitRsp = 2,
 
-	ReadyReq,
-	ReadyRsq,
+	ReadyReq = 3,
+	ReadyRsp = 4,
 
-	AddBreakPointReq,
-	AddBreakPointRsp,
+	AddBreakPointReq = 5,
+	AddBreakPointRsp = 6,
 
-	RemoveBreakPointReq,
-	RemoveBreakPointRsp,
+	RemoveBreakPointReq = 7,
+	RemoveBreakPointRsp = 8,
 
-	ActionReq,
-	ActionRsp,
+	ActionReq = 9,
+	ActionRsp = 10,
 
-	EvalReq,
-	EvalRsp,
-
-	// debugger -> ide
-	BreakNotify,
-	AttachedNotify,
-
-	StartHookReq,
-	StartHookRsp,
+	EvalReq = 11,
+	EvalRsp = 12,
 
 	// debugger -> ide
-	LogNotify,
+	BreakNotify = 13,
+	AttachedNotify = 14,
+
+	StartHookReq = 15,
+	StartHookRsp = 16,
+
+	// debugger -> ide
+	LogNotify = 17,
+
+	// Versioned protocol envelope.
+	EnvelopeV2 = 18,
 };
 
 class Transporter {

@@ -44,6 +44,8 @@ target_sources(emmy_debugger
         #src/proto
         src/proto/proto.cpp
         src/proto/proto_handler.cpp
+        src/proto/protocol_session.cpp
+        src/proto/protocol_v2.cpp
 
         #src/arena
         src/arena/arena.cpp
@@ -136,4 +138,17 @@ if(EMMY_VM_REGISTRY_TEST)
     )
     set_target_properties(emmy_vm_registry_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
     add_test(NAME emmy_vm_registry_test COMMAND emmy_vm_registry_test)
+
+    add_executable(emmy_protocol_v2_test
+            ${emmy_SOURCE_DIR}/tests/protocol_v2_test.cpp
+            src/proto/protocol_v2.cpp
+            src/proto/protocol_session.cpp
+    )
+    target_include_directories(emmy_protocol_v2_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include
+            ${emmy_SOURCE_DIR}/third-party/nlohmann/include
+            ${emmy_SOURCE_DIR}/third-party/libuv-1.46.0/include
+    )
+    set_target_properties(emmy_protocol_v2_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME emmy_protocol_v2_test COMMAND emmy_protocol_v2_test)
 endif()

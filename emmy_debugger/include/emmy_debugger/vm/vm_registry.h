@@ -29,6 +29,7 @@ struct VmMetadata {
 	std::string engineContext;
 	std::string luaVersionHint;
 	std::string runtimeModule;
+	std::string discovery;
 };
 
 struct VmRecord {
@@ -47,6 +48,11 @@ struct VmLifecycleEvent {
 	VmLifecycleState current = VmLifecycleState::Unknown;
 	std::string reason;
 	uint64_t eventSeq = 0;
+};
+
+struct VmRegistrySnapshot {
+	uint64_t eventSeq = 0;
+	std::vector<std::shared_ptr<const VmRecord>> records;
 };
 
 typedef std::function<void(const VmLifecycleEvent&)> VmEventSink;
@@ -78,6 +84,7 @@ public:
 	std::shared_ptr<const VmRecord> Find(uint64_t registrationId) const;
 	std::shared_ptr<const VmRecord> FindByState(lua_State* mainState) const;
 	std::vector<std::shared_ptr<const VmRecord>> Snapshot() const;
+	VmRegistrySnapshot SnapshotWithEventSeq() const;
 
 	void SetEventSink(const VmEventSink& sink);
 

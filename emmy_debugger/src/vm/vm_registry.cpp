@@ -260,15 +260,20 @@ std::shared_ptr<const VmRecord> NativeVmRegistry::FindByState(lua_State* mainSta
 }
 
 std::vector<std::shared_ptr<const VmRecord>> NativeVmRegistry::Snapshot() const {
+	return SnapshotWithEventSeq().records;
+}
+
+VmRegistrySnapshot NativeVmRegistry::SnapshotWithEventSeq() const {
 	std::lock_guard<std::mutex> lock(mutex_);
-	std::vector<std::shared_ptr<const VmRecord>> result;
+	VmRegistrySnapshot snapshot;
+	snapshot.eventSeq = nextEventSeq_;
 	for (std::map<uint64_t, std::shared_ptr<VmRecord>>::const_iterator it = records_.begin();
 		 it != records_.end(); ++it) {
 		if (it->second->state != VmLifecycleState::Closed) {
-			result.push_back(std::shared_ptr<const VmRecord>(new VmRecord(*it->second)));
+			snapshot.records.push_back(std::shared_ptr<const VmRecord>(new VmRecord(*it->second)));
 		}
 	}
-	return result;
+	return snapshot;
 }
 
 void NativeVmRegistry::SetEventSink(const VmEventSink& sink) {

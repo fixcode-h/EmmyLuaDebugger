@@ -11,6 +11,10 @@ ProtoHandler::ProtoHandler(EmmyFacade *owner)
 void ProtoHandler::OnDispatch(nlohmann::json document) {
 	if (document["cmd"].is_number_integer()) {
 		switch (document["cmd"].get<MessageCMD>()) {
+			case MessageCMD::EnvelopeV2: {
+				_owner->OnV2Envelope(document);
+				break;
+			}
 			case MessageCMD::InitReq: {
 				InitParams params;
 				params.Deserialize(document);

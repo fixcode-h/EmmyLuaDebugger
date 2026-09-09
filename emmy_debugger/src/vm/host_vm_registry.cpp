@@ -83,7 +83,13 @@ bool HostVmRegistry::MarkReady(uint64_t registrationId) {
 		}
 		native = nativeRegistry_;
 	}
-	return native != nullptr && native->NotifyReady(registrationId);
+	const bool result = native != nullptr && native->NotifyReady(registrationId);
+	if (result) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = records_.find(registrationId);
+		if (it != records_.end()) it->second->state = VmLifecycleState::Ready;
+	}
+	return result;
 }
 
 bool HostVmRegistry::BeginClose(uint64_t registrationId, const std::string& reason) {
@@ -106,7 +112,13 @@ bool HostVmRegistry::BeginClose(uint64_t registrationId, const std::string& reas
 		}
 		native = nativeRegistry_;
 	}
-	return native != nullptr && native->BeginClose(registrationId, reason);
+	const bool result = native != nullptr && native->BeginClose(registrationId, reason);
+	if (result) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = records_.find(registrationId);
+		if (it != records_.end()) it->second->state = VmLifecycleState::Closing;
+	}
+	return result;
 }
 
 bool HostVmRegistry::EndClose(uint64_t registrationId) {
@@ -130,7 +142,16 @@ bool HostVmRegistry::EndClose(uint64_t registrationId) {
 		}
 		native = nativeRegistry_;
 	}
-	return native != nullptr && native->EndClose(registrationId);
+	const bool result = native != nullptr && native->EndClose(registrationId);
+	if (result) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = records_.find(registrationId);
+		if (it != records_.end()) {
+			it->second->state = VmLifecycleState::Closed;
+			activeByState_.erase(it->second->mainState);
+		}
+	}
+	return result;
 }
 
 bool HostVmRegistry::Release(uint64_t registrationId) {
@@ -146,6 +167,7 @@ bool HostVmRegistry::Release(uint64_t registrationId) {
 				it->second->state != VmLifecycleState::Lost) {
 				return false;
 			}
+			activeByState_.erase(it->second->mainState);
 			records_.erase(it);
 			return true;
 		}
@@ -154,7 +176,11 @@ bool HostVmRegistry::Release(uint64_t registrationId) {
 	const bool released = native != nullptr && native->Release(registrationId);
 	if (released) {
 		std::lock_guard<std::mutex> lock(mutex_);
-		records_.erase(registrationId);
+		auto it = records_.find(registrationId);
+		if (it != records_.end()) {
+			activeByState_.erase(it->second->mainState);
+			records_.erase(it);
+		}
 	}
 	return released;
 }
@@ -174,6 +200,19 @@ bool HostVmRegistry::SetDisplayName(uint64_t registrationId, const std::string& 
 		native = nativeRegistry_;
 	}
 	return native != nullptr && native->SetDisplayName(registrationId, displayName);
+}
+
+std::shared_ptr<const VmRecord> HostVmRegistry::FindByState(lua_State* mainState) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	auto active = activeByState_.find(mainState);
+	if (active == activeByState_.end()) {
+		return std::shared_ptr<const VmRecord>();
+	}
+	auto record = records_.find(active->second);
+	if (record == records_.end()) {
+		return std::shared_ptr<const VmRecord>();
+	}
+	return std::shared_ptr<const VmRecord>(new VmRecord(*record->second));
 }
 
 bool HostVmRegistry::ReconcileExistingVms(NativeVmRegistry& destination) {

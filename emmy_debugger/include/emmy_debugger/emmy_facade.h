@@ -18,12 +18,16 @@
 #include <mutex>
 #include <condition_variable>
 #include <map>
+#include <deque>
+#include <string>
 #include "nlohmann/json_fwd.hpp"
 #include "emmy_debugger/transporter/transporter.h"
 #include "emmy_debugger/api/lua_api.h"
 #include "emmy_debugger/debugger/emmy_debugger_manager.h"
 #include "emmy_debugger/platform/lock.h"
 #include "emmy_debugger/vm/host_vm_registry.h"
+#include "emmy_debugger/proto/protocol_session.h"
+#include "emmy_debugger/proto/protocol_v2.h"
 #include "proto/proto_handler.h"
 
 enum class LogType
@@ -92,6 +96,7 @@ public:
 	void ReadyReq();
 
 	void OnReceiveMessage(nlohmann::json document);
+	void OnV2Envelope(nlohmann::json document);
 
 	uint64_t RegisterLuaVm(lua_State* L, const VmMetadata& metadata);
 	bool NotifyLuaVmReady(uint64_t registrationId);
@@ -107,6 +112,15 @@ public:
 	std::function<void()> StartHook;
 
 private:
+	void OnVmLifecycleEvent(const VmLifecycleEvent& event);
+	void SendV2Document(const nlohmann::json& document);
+	void QueueV2Event(const VmLifecycleEvent& event);
+	uint64_t BuildAndSendVmSnapshot(const std::string& requestId);
+	void FlushPendingV2Events(uint64_t snapshotEventSeq);
+	void SendInitResponse();
+	void SendReadyResponse(uint64_t snapshotEventSeq);
+	uint64_t RegisterFallbackLuaVm(lua_State* L, const std::string& discovery);
+
 	// 使用平台相关的锁类型
 	EmmyMutex waitIDEMutex = EMMY_MUTEX_INIT;
 	EmmyCondVar waitIDECV = EMMY_CONDVAR_INIT;
@@ -128,6 +142,13 @@ private:
 	EmmyDebuggerManager _emmyDebuggerManager;
 	NativeVmRegistry _vmRegistry;
 	HostVmRegistry _hostVmRegistry;
+	ProtocolSession _protocolSession;
+
+	struct PendingV2Event {
+		VmLifecycleEvent event;
+	};
+	std::mutex _v2EventMutex;
+	std::deque<PendingV2Event> _pendingV2Events;
 };
 
 

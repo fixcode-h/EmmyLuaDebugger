@@ -258,6 +258,7 @@ EMMY_HOST_API_EXPORT uint64_t EMMY_HOST_API_CALL Emmy_RegisterLuaVm(
 		return 0;
 	}
 	VmMetadata internal;
+	internal.discovery = "HOST_API";
 	if (metadata != nullptr) {
 		const char* displayName = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, displayName));
 		const char* engineName = ReadHostMetadataField(metadata, offsetof(EmmyHostVmMetadata, engineName));
