@@ -17,6 +17,7 @@
 
 #include "emmy_debugger/arena/arena.h"
 #include "nlohmann/json.hpp"
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -151,6 +152,7 @@ public:
 	std::string expr;
 	std::string value;
 	std::string error;
+	std::string requestId;
 	int seq = 0;
 	int stackLevel = 0;
 	int depth = 0;

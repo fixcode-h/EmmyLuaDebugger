@@ -462,6 +462,34 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		return;
 	}
 
+	if (kind == "request" && type == "debug.eval") {
+		const uint64_t vmId = ParseVmProtocolId(document["target"]["vmId"]);
+		const uint64_t pauseId = document["target"]["pauseId"].is_number_unsigned()
+			? document["target"]["pauseId"].get<uint64_t>() : 0;
+		std::shared_ptr<EvalContext> context(new EvalContext());
+		context->requestId = requestId;
+		context->vmId = vmId;
+		context->pauseId = pauseId;
+		const nlohmann::json& payload = document["payload"];
+		if (payload["expr"].is_string()) context->expr = payload["expr"].get<std::string>();
+		if (payload["stackLevel"].is_number_integer()) context->stackLevel = payload["stackLevel"].get<int>();
+		if (payload["depth"].is_number_integer()) context->depth = payload["depth"].get<int>();
+		if (payload["cacheId"].is_number_integer()) context->cacheId = payload["cacheId"].get<int>();
+
+		const bool accepted = vmId != 0 && pauseId != 0 && _emmyDebuggerManager.EvalForVm(vmId, context);
+		if (!accepted) {
+			nlohmann::json error = nlohmann::json::object();
+			error["code"] = vmId == 0 || !_emmyDebuggerManager.GetDebuggerByVmId(vmId)
+				? "VM_NOT_FOUND" : "STALE_PAUSE_REFERENCE";
+			error["message"] = "The requested evaluation target is not active";
+			error["retryable"] = false;
+			SendV2Document(MakeV2Envelope(
+				"response", "debug.eval", _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+		}
+		return;
+	}
+
 	if (kind == "request" && type == "agent.describe") {
 		nlohmann::json payload = nlohmann::json::object();
 		payload["agentSessionId"] = _protocolSession.AgentSessionId();
@@ -590,7 +618,19 @@ bool EmmyFacade::OnBreak(std::shared_ptr<Debugger> debugger) {
 
 void EmmyFacade::OnEvalResult(std::shared_ptr<EvalContext> context) {
 	if (transporter) {
-		transporter->Send(int(MessageCMD::EvalRsp), context->Serialize());
+		if (context && !context->requestId.empty()) {
+			nlohmann::json payload = context->Serialize();
+			nlohmann::json envelope = MakeV2Envelope(
+				"response", "debug.eval", _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), context->requestId, 0, payload,
+				context->success);
+			envelope["target"] = nlohmann::json::object();
+			if (context->vmId != 0) envelope["target"]["vmId"] = VmProtocolId(context->vmId);
+			if (context->pauseId != 0) envelope["target"]["pauseId"] = context->pauseId;
+			SendV2Document(envelope);
+		} else {
+			transporter->Send(int(MessageCMD::EvalRsp), context->Serialize());
+		}
 	}
 }
 

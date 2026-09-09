@@ -268,6 +268,7 @@ bool EmmyDebuggerManager::DoActionForVm(uint64_t vmId, DebugAction action, uint6
 {
 	auto debugger = GetDebuggerByVmId(vmId);
 	if (!debugger || (pauseId != 0 && !debugger->IsPauseActive(pauseId))) return false;
+	if (action != DebugAction::Break && pauseId == 0) return false;
 	debugger->DoAction(action);
 	return true;
 }
@@ -276,7 +277,7 @@ bool EmmyDebuggerManager::EvalForVm(uint64_t vmId, std::shared_ptr<EvalContext> 
 {
 	auto debugger = GetDebuggerByVmId(vmId);
 	if (!debugger) return false;
-	if (ctx && ctx->pauseId != 0 && !debugger->IsPauseActive(ctx->pauseId)) return false;
+	if (!ctx || ctx->pauseId == 0 || !debugger->IsPauseActive(ctx->pauseId)) return false;
 	return debugger->Eval(ctx, false);
 }
 

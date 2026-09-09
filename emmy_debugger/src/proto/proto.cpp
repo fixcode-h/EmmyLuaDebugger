@@ -254,6 +254,9 @@ void EvalContext::Deserialize(nlohmann::json json) {
 	if (json.count("cacheId") != 0 && json["cacheId"].is_number_integer()) {
 		cacheId = json["cacheId"];
 	}
+	if (json["requestId"].is_string()) {
+		requestId = json["requestId"];
+	}
 	vmId = ParseVmId(json["vmId"]);
 	if (json["pauseId"].is_number_unsigned() || json["pauseId"].is_number_integer()) {
 		pauseId = json["pauseId"].get<uint64_t>();
