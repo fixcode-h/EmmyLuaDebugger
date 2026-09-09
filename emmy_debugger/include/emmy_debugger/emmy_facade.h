@@ -116,6 +116,8 @@ public:
 
 	// Start hook 作为成员存在
 	std::function<void()> StartHook;
+	// Attach hook teardown callback, installed by emmy_hook outside DllMain.
+	std::function<void()> StopHook;
 
 private:
 	void OnVmLifecycleEvent(const VmLifecycleEvent& event);

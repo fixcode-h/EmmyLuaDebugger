@@ -83,6 +83,7 @@ EmmyFacade::EmmyFacade()
 	  isWaitingForIDE(false),
 	  workMode(WorkMode::EmmyCore),
 	  readyHook(false),
+	  StopHook(nullptr),
 	  _authenticated(false),
 	  _protoHandler(this) {
 	_vmRegistry.SetEventSink([this](const VmLifecycleEvent& event) {
@@ -255,6 +256,10 @@ int EmmyFacade::OnDisconnect() {
 
 void EmmyFacade::Destroy() {
 	OnDisconnect();
+	if (StopHook) {
+		StopHook();
+		StopHook = nullptr;
+	}
 
 	if (transporter) {
 		transporter->Stop();
@@ -592,7 +597,7 @@ void EmmyFacade::SendReadyResponse(uint64_t snapshotEventSeq) {
 }
 
 bool EmmyFacade::OnBreak(std::shared_ptr<Debugger> debugger) {
-	if (!debugger) {
+	if (!debugger || !transporter || !transporter->IsConnected()) {
 		return false;
 	}
 	std::vector<Stack> stacks;
@@ -753,7 +758,7 @@ bool EmmyFacade::StartupHookMode(int port) {
 }
 
 void EmmyFacade::Attach(lua_State *L) {
-	if (!this->transporter->IsConnected())
+	if (!this->transporter || !this->transporter->IsConnected())
 		return;
 
 	// 这里存在一个问题就是 hook 的时机太早了，globalstate 都还没初始化完毕

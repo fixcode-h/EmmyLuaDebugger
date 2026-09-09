@@ -1,6 +1,7 @@
 ﻿#include "emmy_hook.h"
 #include <cassert>
 #include <set>
+#include <vector>
 #include <unordered_map>
 #include "emmy_debugger/emmy_facade.h"
 #include "emmy_debugger/api/lua_api.h"
@@ -42,23 +43,33 @@ LoadLibraryExW_t LoadLibraryExW_dll = nullptr;
 // 完全不需要运行时初始化，避免了 std::mutex 在 DLL 加载场景下的初始化问题
 // SRWLOCK 比 CRITICAL_SECTION 更轻量，且不需要调用 InitializeCriticalSection
 static SRWLOCK g_srwPostLoadModule = SRWLOCK_INIT;
+static SRWLOCK g_srwHookList = SRWLOCK_INIT;
 static std::set<std::string> g_loadedModules;
+static std::vector<HOOK_HANDLE> g_hookList;
+
+void UninstallAllHooks();
 
 HOOK_STATUS Hook(void* InEntryPoint,
                  void* InHookProc,
                  void* InCallback,
                  HOOK_HANDLE OutHandle)
 {
-	const auto hHook = new HOOK_TRACE_INFO();
+	const auto hHook = OutHandle != nullptr ? OutHandle : new HOOK_TRACE_INFO();
 	ULONG ACLEntries[1] = {0};
 	HOOK_STATUS status = LhInstallHook(
 		InEntryPoint,
 		InHookProc,
 		InCallback,
 		hHook);
-	assert(status == 0);
+	if (status != 0) return status;
 	status = LhSetExclusiveACL(ACLEntries, 0, hHook);
-	assert(status == 0);
+	if (status != 0) {
+		LhUninstallHook(hHook);
+		return status;
+	}
+	AcquireSRWLockExclusive(&g_srwHookList);
+	g_hookList.push_back(hHook);
+	ReleaseSRWLockExclusive(&g_srwHookList);
 	return status;
 }
 
@@ -290,18 +301,26 @@ void HookLoadLibrary()
 		// TODO hook!!!
 		LoadLibraryExW_dll = (LoadLibraryExW_t)GetProcAddress(hModuleKernel, "LoadLibraryExW");
 
-		// destroy these functions.
 		const auto hHook = new HOOK_TRACE_INFO();
-		ULONG ACLEntries[1] = {0};
-		HOOK_STATUS status = LhInstallHook(
-			(void*)LoadLibraryExW_dll,
-			(void*)LoadLibraryExW_intercept,
-			(PVOID)nullptr,
-			hHook);
-		assert(status == 0);
-		status = LhSetExclusiveACL(ACLEntries, 0, hHook);
-		assert(status == 0);
+		Hook((void*)LoadLibraryExW_dll, (void*)LoadLibraryExW_intercept,
+			(PVOID)nullptr, hHook);
 	}
+}
+
+void UninstallAllHooks()
+{
+	AcquireSRWLockExclusive(&g_srwHookList);
+	std::vector<HOOK_HANDLE> hooks;
+	hooks.swap(g_hookList);
+	ReleaseSRWLockExclusive(&g_srwHookList);
+
+	for (const auto hook : hooks) {
+		if (hook != nullptr) {
+			LhUninstallHook(hook);
+		}
+	}
+	LhWaitForPendingRemovals();
+	for (const auto hook : hooks) delete hook;
 }
 
 void redirect(int port)
@@ -424,6 +443,7 @@ int StartupHookMode(void* lpParam)
 	// 因为 DllMain 在 loader lock 下执行，CRT 可能还没有完全初始化
 	EmmyFacade::Get().SetWorkMode(WorkMode::Attach);
 	EmmyFacade::Get().StartHook = FindAndHook;
+	EmmyFacade::Get().StopHook = UninstallAllHooks;
 	if (lpParam != nullptr) {
 		const auto* params = static_cast<const RemoteThreadParam*>(lpParam);
 		if (params->authToken[0] != '\0') {
