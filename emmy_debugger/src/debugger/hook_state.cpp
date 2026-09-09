@@ -193,7 +193,7 @@ bool HookStateStop::Start(std::shared_ptr<Debugger> debugger, lua_State* current
 	
 	// 此处会引发递归加锁而报错，而如果使用递归锁对调试体验影响
 	// debugger->DoAction(DebugAction::Continue);
-	debugger->SetHookState(debugger->GetEmmyDebuggerManager()->stateContinue);
+	debugger->SetHookState(debugger->GetStateContinue());
 
 	return true;
 }

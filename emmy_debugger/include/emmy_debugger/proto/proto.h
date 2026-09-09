@@ -100,6 +100,8 @@ public:
 class ActionParams : public JsonProtocol {
 public:
 	DebugAction action = DebugAction::None;
+	uint64_t vmId = 0;
+	uint64_t pauseId = 0;
 
 	nlohmann::json Serialize() override;
 
@@ -153,6 +155,8 @@ public:
 	int stackLevel = 0;
 	int depth = 0;
 	int cacheId = 0;
+	uint64_t vmId = 0;
+	uint64_t pauseId = 0;
 	Idx<Variable> result;
 	bool success = false;
 	bool setValue = false;

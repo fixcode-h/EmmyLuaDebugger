@@ -24,6 +24,21 @@ std::string VmProtocolId(uint64_t registrationId) {
 	return stream.str();
 }
 
+uint64_t ParseVmProtocolId(const nlohmann::json& value) {
+	if (value.is_number_unsigned() || value.is_number_integer()) {
+		return value.get<uint64_t>();
+	}
+	if (!value.is_string()) return 0;
+	std::string text = value.get<std::string>();
+	if (text.compare(0, 3, "vm-") == 0) text = text.substr(3);
+	if (text.empty()) return 0;
+	try {
+		return static_cast<uint64_t>(std::stoull(text, nullptr, 16));
+	} catch (...) {
+		return 0;
+	}
+}
+
 nlohmann::json MakeV2Envelope(const std::string& kind,
 							 const std::string& type,
 							 const std::string& agentSessionId,

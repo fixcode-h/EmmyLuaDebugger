@@ -24,6 +24,8 @@ public:
 	 * 获得L 的main thread 所在的 debugger
 	 */
 	std::shared_ptr<Debugger> GetDebugger(lua_State* L);
+	std::shared_ptr<Debugger> GetDebuggerByVmId(uint64_t vmId);
+	bool BindVmId(lua_State* L, uint64_t vmId);
 
 	/*
 	 * 如果L 是main thread 则添加一个新的debugger 否则返回他所在的main thread对应的debugger
@@ -69,6 +71,8 @@ public:
 
 	// 计算表达式
 	void Eval(std::shared_ptr<EvalContext> ctx);
+	bool DoActionForVm(uint64_t vmId, DebugAction action, uint64_t pauseId = 0);
+	bool EvalForVm(uint64_t vmId, std::shared_ptr<EvalContext> ctx);
 
 	void OnDisconnect();
 
@@ -76,16 +80,7 @@ public:
 
 	bool IsRunning();
 
-	// public 成员放下面
-	std::shared_ptr<HookStateBreak> stateBreak;
-	std::shared_ptr<HookStateStepOver> stateStepOver;
-	std::shared_ptr<HookStateStepIn> stateStepIn;
-	std::shared_ptr<HookStateStepOut> stateStepOut;
-	std::shared_ptr<HookStateContinue> stateContinue;
-	std::shared_ptr<HookStateStop> stateStop;
-	// 按道理需要加锁
-	// 但实际上通常不会改变
-	// 暂时不加
+	// 按道理需要加锁，但这些配置只在初始化/握手阶段更新。
 	std::string emmyHelperPath;     // emmyHelper 目录路径
 	std::string customHelperPath;   // 自定义 helper 目录路径（可选）
 	std::string emmyHelperName;     // 主 helper 脚本名称

@@ -88,10 +88,18 @@ void ProtoHandler::OnRemoveBreakPointReq(RemoveBreakpointParams &params) {
 
 void ProtoHandler::OnActionReq(ActionParams &params) {
 	auto &manager = _owner->GetDebugManager();
-	manager.DoAction(params.action);
+	if (params.vmId != 0) {
+		manager.DoActionForVm(params.vmId, params.action, params.pauseId);
+	} else {
+		manager.DoAction(params.action);
+	}
 }
 
 void ProtoHandler::OnEvalReq(EvalParams &params) {
 	auto &manager = _owner->GetDebugManager();
-	manager.Eval(params.ctx);
+	if (params.ctx && params.ctx->vmId != 0) {
+		manager.EvalForVm(params.ctx->vmId, params.ctx);
+	} else {
+		manager.Eval(params.ctx);
+	}
 }

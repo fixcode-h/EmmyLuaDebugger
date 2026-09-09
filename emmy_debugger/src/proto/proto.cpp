@@ -18,6 +18,25 @@
 #include "emmy_debugger/proto/proto.h"
 #include "emmy_debugger/api/lua_api.h"
 
+namespace {
+
+uint64_t ParseVmId(const nlohmann::json& value) {
+	if (value.is_number_unsigned() || value.is_number_integer()) {
+		return value.get<uint64_t>();
+	}
+	if (!value.is_string()) return 0;
+	std::string text = value.get<std::string>();
+	if (text.compare(0, 3, "vm-") == 0) text = text.substr(3);
+	if (text.empty()) return 0;
+	try {
+		return static_cast<uint64_t>(std::stoull(text, nullptr, 16));
+	} catch (...) {
+		return 0;
+	}
+}
+
+} // namespace
+
 JsonProtocol::~JsonProtocol() {
 }
 
@@ -122,6 +141,10 @@ nlohmann::json ActionParams::Serialize() {
 void ActionParams::Deserialize(nlohmann::json json) {
 	if (json.count("action") != 0 && json["action"].is_number_integer()) {
 		action = json["action"].get<DebugAction>();
+	}
+	vmId = ParseVmId(json["vmId"]);
+	if (json["pauseId"].is_number_unsigned() || json["pauseId"].is_number_integer()) {
+		pauseId = json["pauseId"].get<uint64_t>();
 	}
 }
 
@@ -230,6 +253,10 @@ void EvalContext::Deserialize(nlohmann::json json) {
 	}
 	if (json.count("cacheId") != 0 && json["cacheId"].is_number_integer()) {
 		cacheId = json["cacheId"];
+	}
+	vmId = ParseVmId(json["vmId"]);
+	if (json["pauseId"].is_number_unsigned() || json["pauseId"].is_number_integer()) {
+		pauseId = json["pauseId"].get<uint64_t>();
 	}
 
 }

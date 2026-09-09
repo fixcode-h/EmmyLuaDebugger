@@ -382,6 +382,7 @@ uint64_t EmmyFacade::RegisterFallbackLuaVm(lua_State* L, const std::string& disc
 	if (mainState == nullptr) mainState = L;
 	const uint64_t registrationId = RegisterLuaVm(mainState, metadata);
 	if (registrationId != 0) {
+		_emmyDebuggerManager.BindVmId(mainState, registrationId);
 		NotifyLuaVmReady(registrationId);
 	}
 	return registrationId;
@@ -427,6 +428,37 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 
 	if (kind == "request" && type == "vm.snapshot") {
 		BuildAndSendVmSnapshot(requestId);
+		return;
+	}
+
+	if (kind == "request" && type == "debug.action") {
+		const uint64_t vmId = ParseVmProtocolId(document["target"]["vmId"]);
+		const uint64_t pauseId = document["target"]["pauseId"].is_number_unsigned()
+			? document["target"]["pauseId"].get<uint64_t>() : 0;
+		const int actionValue = document["payload"]["action"].is_number_integer()
+			? document["payload"]["action"].get<int>() : -1;
+		const bool validAction = actionValue >= static_cast<int>(DebugAction::Break) &&
+			actionValue <= static_cast<int>(DebugAction::Stop);
+		const bool accepted = validAction && vmId != 0 &&
+			_emmyDebuggerManager.DoActionForVm(vmId, static_cast<DebugAction>(actionValue), pauseId);
+		if (accepted) {
+			nlohmann::json payload = nlohmann::json::object();
+			payload["accepted"] = true;
+			payload["vmId"] = VmProtocolId(vmId);
+			if (pauseId != 0) payload["pauseId"] = pauseId;
+			SendV2Document(MakeV2Envelope(
+				"response", "debug.action", _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, payload));
+		} else {
+			nlohmann::json error = nlohmann::json::object();
+			error["code"] = vmId == 0 || !_emmyDebuggerManager.GetDebuggerByVmId(vmId)
+				? "VM_NOT_FOUND" : "STALE_PAUSE_REFERENCE";
+			error["message"] = "The requested VM action was rejected";
+			error["retryable"] = false;
+			SendV2Document(MakeV2Envelope(
+				"response", "debug.action", _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+		}
 		return;
 	}
 
@@ -544,6 +576,12 @@ bool EmmyFacade::OnBreak(std::shared_ptr<Debugger> debugger) {
 	auto obj = nlohmann::json::object();
 	obj["cmd"] = static_cast<int>(MessageCMD::BreakNotify);
 	obj["stacks"] = JsonProtocol::SerializeArray(stacks);
+	if (debugger->GetVmId() != 0) {
+		obj["vmId"] = VmProtocolId(debugger->GetVmId());
+	}
+	if (debugger->GetPauseId() != 0) {
+		obj["pauseId"] = debugger->GetPauseId();
+	}
 
 	transporter->Send(int(MessageCMD::BreakNotify), obj);
 

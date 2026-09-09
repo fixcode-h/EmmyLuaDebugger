@@ -33,11 +33,20 @@ void WaitConnectedHook(lua_State *L, lua_Debug *ar) {
 	// std::lock_guard<std::mutex> lock()
 }
 
-Debugger::Debugger(lua_State *L, EmmyDebuggerManager *manager)
+Debugger::Debugger(lua_State *L, EmmyDebuggerManager *manager, uint64_t vmId)
 	: currentL(L),
 	  mainL(L),
 	  manager(manager),
+	  vmId(vmId),
+	  pauseIdCounter(0),
+	  activePauseId(0),
 	  hookState(nullptr),
+	  stateBreak(std::make_shared<HookStateBreak>()),
+	  stateContinue(std::make_shared<HookStateContinue>()),
+	  stateStepOver(std::make_shared<HookStateStepOver>()),
+	  stateStepIn(std::make_shared<HookStateStepIn>()),
+	  stateStepOut(std::make_shared<HookStateStepOut>()),
+	  stateStop(std::make_shared<HookStateStop>()),
 	  running(false),
 	  skipHook(false),
 	  blocking(false),
@@ -144,6 +153,34 @@ void Debugger::SetCurrentState(lua_State *L) {
 	currentL = L;
 }
 
+uint64_t Debugger::GetVmId() const {
+	return vmId;
+}
+
+void Debugger::SetVmId(uint64_t value) {
+	vmId = value;
+}
+
+uint64_t Debugger::GetPauseId() const {
+	return activePauseId.load(std::memory_order_acquire);
+}
+
+bool Debugger::IsPauseActive(uint64_t pauseId) const {
+	const uint64_t active = GetPauseId();
+	return active != 0 && (pauseId == 0 || active == pauseId);
+}
+
+void Debugger::ClearPause() {
+	activePauseId.store(0, std::memory_order_release);
+}
+
+std::shared_ptr<HookStateBreak> Debugger::GetStateBreak() const { return stateBreak; }
+std::shared_ptr<HookStateContinue> Debugger::GetStateContinue() const { return stateContinue; }
+std::shared_ptr<HookStateStepOver> Debugger::GetStateStepOver() const { return stateStepOver; }
+std::shared_ptr<HookStateStepIn> Debugger::GetStateStepIn() const { return stateStepIn; }
+std::shared_ptr<HookStateStepOut> Debugger::GetStateStepOut() const { return stateStepOut; }
+std::shared_ptr<HookStateStop> Debugger::GetStateStop() const { return stateStop; }
+
 void Debugger::Hook(lua_Debug *ar, lua_State *L) {
 	if (skipHook) {
 		return;
@@ -187,6 +224,7 @@ void Debugger::Stop() {
 	running = false;
 	skipHook = true;
 	blocking = false;
+	ClearPause();
 
 	// 停止main_state 的hook
 	// 但不停止coroutine的hook因为没有办法知道这个lua state 指针是否有效
@@ -626,30 +664,39 @@ void Debugger::ClearCache() const {
 }
 
 void Debugger::DoAction(DebugAction action) {
+	if (action == DebugAction::Continue || action == DebugAction::StepOver ||
+		action == DebugAction::StepIn || action == DebugAction::StepOut ||
+		action == DebugAction::Stop) {
+		ClearPause();
+	}
 	// 锁加到这里
 	EMMY_LOCK_GUARD(hookStateMtx);
 	switch (action) {
 		case DebugAction::Break:
-			SetHookState(manager->stateBreak);
+			SetHookState(stateBreak);
 			break;
 		case DebugAction::Continue:
-			SetHookState(manager->stateContinue);
+			SetHookState(stateContinue);
 			break;
 		case DebugAction::StepOver:
-			SetHookState(manager->stateStepOver);
+			SetHookState(stateStepOver);
 			break;
 		case DebugAction::StepIn:
-			SetHookState(manager->stateStepIn);
+			SetHookState(stateStepIn);
 			break;
 		case DebugAction::Stop:
-			SetHookState(manager->stateStop);
+			SetHookState(stateStop);
 			break;
 		case DebugAction::StepOut:
-			SetHookState(manager->stateStepOut);
+			SetHookState(stateStepOut);
 			break;
 		default:
 			break;
 	}
+}
+
+std::shared_ptr<HookState> Debugger::GetHookState() const {
+	return hookState;
 }
 
 void Debugger::UpdateHook(int mask, lua_State *L) {
@@ -702,6 +749,8 @@ std::string Debugger::GetFile(lua_Debug *ar) const {
 }
 
 void Debugger::HandleBreak() {
+	const uint64_t pauseId = pauseIdCounter.fetch_add(1, std::memory_order_relaxed) + 1;
+	activePauseId.store(pauseId, std::memory_order_release);
 	// to be on the safe side, hook it again
 	UpdateHook(LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, currentL);
 

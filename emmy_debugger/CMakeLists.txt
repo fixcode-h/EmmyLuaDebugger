@@ -166,4 +166,24 @@ if(EMMY_VM_REGISTRY_TEST)
     add_dependencies(emmy_transporter_frame_test emmy_debugger)
     set_target_properties(emmy_transporter_frame_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
     add_test(NAME emmy_transporter_frame_test COMMAND emmy_transporter_frame_test)
+
+    add_executable(emmy_debugger_isolation_test
+            ${emmy_SOURCE_DIR}/tests/debugger_isolation_test.cpp
+    )
+    target_include_directories(emmy_debugger_isolation_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include
+            ${emmy_SOURCE_DIR}/third-party/nlohmann/include
+            ${emmy_SOURCE_DIR}/third-party/libuv-1.46.0/include
+    )
+    target_link_libraries(emmy_debugger_isolation_test PRIVATE emmy_debugger)
+    add_dependencies(emmy_debugger_isolation_test emmy_debugger)
+    set_target_properties(emmy_debugger_isolation_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME emmy_debugger_isolation_test COMMAND emmy_debugger_isolation_test)
+    set_tests_properties(
+            emmy_vm_registry_test
+            emmy_protocol_v2_test
+            emmy_transporter_frame_test
+            emmy_debugger_isolation_test
+            PROPERTIES WORKING_DIRECTORY ${emmy_SOURCE_DIR}
+    )
 endif()

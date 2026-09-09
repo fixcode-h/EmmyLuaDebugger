@@ -15,6 +15,7 @@
 */
 #pragma once
 
+#include <cstdint>
 #include <vector>
 #include <mutex>
 #include <condition_variable>
@@ -36,7 +37,7 @@ class EmmyDebuggerManager;
 class Debugger: public std::enable_shared_from_this<Debugger>
 {
 public:
-	Debugger(lua_State* L, EmmyDebuggerManager* manager);
+	Debugger(lua_State* L, EmmyDebuggerManager* manager, uint64_t vmId = 0);
 	~Debugger();
 
 	void Start();
@@ -48,6 +49,17 @@ public:
 	void Detach();
 
 	void SetCurrentState(lua_State* L);
+	uint64_t GetVmId() const;
+	void SetVmId(uint64_t vmId);
+	uint64_t GetPauseId() const;
+	bool IsPauseActive(uint64_t pauseId = 0) const;
+	void ClearPause();
+	std::shared_ptr<HookStateBreak> GetStateBreak() const;
+	std::shared_ptr<HookStateContinue> GetStateContinue() const;
+	std::shared_ptr<HookStateStepOver> GetStateStepOver() const;
+	std::shared_ptr<HookStateStepIn> GetStateStepIn() const;
+	std::shared_ptr<HookStateStepOut> GetStateStepOut() const;
+	std::shared_ptr<HookStateStop> GetStateStop() const;
 	/*
 	 * hook时调用
 	 */
@@ -88,6 +100,7 @@ public:
 	 * 设置当前状态机，他的锁由doAction负责
 	 */
 	void SetHookState(std::shared_ptr<HookState> newState);
+	std::shared_ptr<HookState> GetHookState() const;
 	EmmyDebuggerManager* GetEmmyDebuggerManager();
 
 	void SetVariableArena(Arena<Variable> *arena);
@@ -122,6 +135,9 @@ private:
 	lua_State* mainL;
 
 	EmmyDebuggerManager* manager;
+	uint64_t vmId;
+	std::atomic<uint64_t> pauseIdCounter;
+	std::atomic<uint64_t> activePauseId;
 
 	// 使用平台相关的锁类型
 	EmmyMutex hookStateMtx = EMMY_MUTEX_INIT;
@@ -131,6 +147,12 @@ private:
 	EmmyCondVar cvRun = EMMY_CONDVAR_INIT;
 
 	std::shared_ptr<HookState> hookState;
+	std::shared_ptr<HookStateBreak> stateBreak;
+	std::shared_ptr<HookStateContinue> stateContinue;
+	std::shared_ptr<HookStateStepOver> stateStepOver;
+	std::shared_ptr<HookStateStepIn> stateStepIn;
+	std::shared_ptr<HookStateStepOut> stateStepOut;
+	std::shared_ptr<HookStateStop> stateStop;
 
 	bool running;
 	bool skipHook;

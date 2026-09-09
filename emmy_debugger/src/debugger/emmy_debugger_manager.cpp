@@ -3,14 +3,7 @@
 #include "emmy_debugger/util.h"
 
 EmmyDebuggerManager::EmmyDebuggerManager()
-	: stateBreak(std::make_shared<HookStateBreak>()),
-      stateStepOver(std::make_shared<HookStateStepOver>()),
-      stateStepIn(std::make_shared<HookStateStepIn>()),
-      stateStepOut(std::make_shared<HookStateStepOut>()),
-	  stateContinue(std::make_shared<HookStateContinue>()),
-	  stateStop(std::make_shared<HookStateStop>()),
-
-	  isRunning(false)
+	: isRunning(false)
 {
 }
 
@@ -31,6 +24,38 @@ std::shared_ptr<Debugger> EmmyDebuggerManager::GetDebugger(lua_State* L)
 	{
 		return nullptr;
 	}
+}
+
+std::shared_ptr<Debugger> EmmyDebuggerManager::GetDebuggerByVmId(uint64_t vmId)
+{
+	if (vmId == 0) return nullptr;
+	EMMY_LOCK_GUARD(debuggerMtx);
+	for (auto &entry : debuggers)
+	{
+		if (entry.second && entry.second->GetVmId() == vmId)
+		{
+			return entry.second;
+		}
+	}
+	return nullptr;
+}
+
+bool EmmyDebuggerManager::BindVmId(lua_State* L, uint64_t vmId)
+{
+	if (vmId == 0) return false;
+	EMMY_LOCK_GUARD(debuggerMtx);
+	const auto identify = GetUniqueIdentify(L);
+	auto it = debuggers.find(identify);
+	if (it == debuggers.end() || !it->second) return false;
+	for (auto &entry : debuggers)
+	{
+		if (entry.first != identify && entry.second && entry.second->GetVmId() == vmId)
+		{
+			return false;
+		}
+	}
+	it->second->SetVmId(vmId);
+	return true;
 }
 
 std::shared_ptr<Debugger> EmmyDebuggerManager::AddDebugger(lua_State* L)
@@ -105,6 +130,10 @@ void EmmyDebuggerManager::RemoveAllDebugger()
 {
 	EMMY_LOCK_GUARD(debuggerMtx);
 	debuggers.clear();
+	{
+		EMMY_LOCK_GUARD(breakDebuggerMtx);
+		hitDebugger.reset();
+	}
 }
 
 std::shared_ptr<Debugger> EmmyDebuggerManager::GetHitBreakpoint()
@@ -211,7 +240,11 @@ void EmmyDebuggerManager::HandleBreak(lua_State* L)
 
 void EmmyDebuggerManager::DoAction(DebugAction action)
 {
-	auto debugger = GetHitBreakpoint();
+	std::shared_ptr<Debugger> debugger;
+	{
+		EMMY_LOCK_GUARD(debuggerMtx);
+		if (debuggers.size() == 1) debugger = debuggers.begin()->second;
+	}
 	if (debugger)
 	{
 		debugger->DoAction(action);
@@ -220,11 +253,31 @@ void EmmyDebuggerManager::DoAction(DebugAction action)
 
 void EmmyDebuggerManager::Eval(std::shared_ptr<EvalContext> ctx)
 {
-	auto debugger = GetHitBreakpoint();
+	std::shared_ptr<Debugger> debugger;
+	{
+		EMMY_LOCK_GUARD(debuggerMtx);
+		if (debuggers.size() == 1) debugger = debuggers.begin()->second;
+	}
 	if (debugger)
 	{
 		debugger->Eval(ctx, false);
 	}
+}
+
+bool EmmyDebuggerManager::DoActionForVm(uint64_t vmId, DebugAction action, uint64_t pauseId)
+{
+	auto debugger = GetDebuggerByVmId(vmId);
+	if (!debugger || (pauseId != 0 && !debugger->IsPauseActive(pauseId))) return false;
+	debugger->DoAction(action);
+	return true;
+}
+
+bool EmmyDebuggerManager::EvalForVm(uint64_t vmId, std::shared_ptr<EvalContext> ctx)
+{
+	auto debugger = GetDebuggerByVmId(vmId);
+	if (!debugger) return false;
+	if (ctx && ctx->pauseId != 0 && !debugger->IsPauseActive(ctx->pauseId)) return false;
+	return debugger->Eval(ctx, false);
 }
 
 void EmmyDebuggerManager::OnDisconnect()
