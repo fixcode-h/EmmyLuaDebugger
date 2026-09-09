@@ -1,5 +1,6 @@
 ﻿#include "emmy_tool.h"
 #include <string>
+#include <cstdlib>
 #include "utility.h"	
 #include "Psapi.h"
 #include <thread>
@@ -255,14 +256,20 @@ int EmmyTool::Attach() {
 	std::string dir = _cmd.Get<std::string>("dir");
 	std::string dll = _cmd.Get<std::string>("dll");
 	std::string authToken = _cmd.Get<std::string>("auth-token");
+	if (authToken.empty()) {
+		const char* environmentToken = std::getenv("EMMY_ATTACH_AUTH_TOKEN");
+		if (environmentToken != nullptr) {
+			authToken = environmentToken;
+		}
+	}
 	auto capture = _cmd.Get<bool>("capture-log");
 	bool alreadyAttached = false;
 	if (!InjectDll(pid, dir.c_str(), dll.c_str(), capture, authToken, &alreadyAttached)) {
-		printf("{\"schemaVersion\":1,\"status\":\"error\",\"pid\":%d,\"injected\":false,\"listening\":false,\"authReady\":false}\n", pid);
+		printf("{\"schemaVersion\":1,\"status\":\"error\",\"pid\":%d,\"injected\":false,\"listening\":false,\"authReady\":false,\"rollbackRequired\":false,\"message\":\"inject_failed\"}\n", pid);
 		return -1;
 	}
 	const bool authReady = !authToken.empty() && !alreadyAttached;
-	printf("{\"schemaVersion\":1,\"status\":\"%s\",\"pid\":%d,\"injected\":true,\"alreadyAttached\":%s,\"listening\":%s,\"authReady\":%s}\n",
+	printf("{\"schemaVersion\":1,\"status\":\"%s\",\"pid\":%d,\"injected\":true,\"alreadyAttached\":%s,\"listening\":%s,\"authReady\":%s,\"rollbackRequired\":false}\n",
 		alreadyAttached ? "already-attached" : (authReady ? "auth-ready" : "listening"),
 		pid,
 		alreadyAttached ? "true" : "false",

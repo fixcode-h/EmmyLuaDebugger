@@ -153,6 +153,8 @@ public:
 	std::string value;
 	std::string error;
 	std::string requestId;
+	// Canonical v2 request document hash used for idempotent response replay.
+	std::string operationHash;
 	int seq = 0;
 	int stackLevel = 0;
 	int depth = 0;

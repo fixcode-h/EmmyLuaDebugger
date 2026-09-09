@@ -277,9 +277,14 @@ WorkMode EmmyFacade::GetWorkMode() {
 
 
 void EmmyFacade::InitReq(InitParams & params) {
+	const bool alreadyNegotiated = _protocolSession.IsNegotiated();
 	_protocolSession.MarkNegotiated();
-	if (StartHook) {
+	if (!alreadyNegotiated && StartHook) {
 		StartHook();
+	}
+	if (alreadyNegotiated) {
+		SendInitResponse();
+		return;
 	}
 
 	_emmyDebuggerManager.emmyHelperPath = params.emmyHelperPath;
@@ -301,7 +306,7 @@ void EmmyFacade::InitReq(InitParams & params) {
 }
 
 bool EmmyFacade::AuthenticateInit(const std::string& token) {
-	if (!_transportAuth.Verify(token)) {
+	if (!_transportAuth.VerifyForEpoch(token, _protocolSession.ConnectionEpoch())) {
 		nlohmann::json error = nlohmann::json::object();
 		error["code"] = "NOT_AUTHORIZED";
 		error["message"] = "Emmy Agent authentication failed";
@@ -430,9 +435,40 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		? document["kind"].get<std::string>() : std::string();
 	const std::string requestId = document["requestId"].is_string()
 		? document["requestId"].get<std::string>() : std::string();
+	const uint64_t incomingEpoch = document["connectionEpoch"].is_number_unsigned()
+		? document["connectionEpoch"].get<uint64_t>() : 0;
+	if (_transportAuth.IsRequired() && !_authenticated.load(std::memory_order_acquire)) {
+		nlohmann::json error = nlohmann::json::object();
+		error["code"] = "NOT_AUTHORIZED";
+		error["message"] = "Emmy Agent authentication is required before requests";
+		error["retryable"] = false;
+		SendV2Document(MakeV2Envelope("response", type.empty() ? "unknown" : type,
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), requestId,
+			0, nlohmann::json(), false, error));
+		return;
+	}
+	if (!_protocolSession.AcceptIncomingEpoch(incomingEpoch)) {
+		nlohmann::json error = nlohmann::json::object();
+		error["code"] = "STALE_CONNECTION_EPOCH";
+		error["message"] = "request belongs to an old connection epoch";
+		error["retryable"] = true;
+		SendV2Document(MakeV2Envelope("response", type.empty() ? "unknown" : type,
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), requestId,
+			0, nlohmann::json(), false, error));
+		return;
+	}
+	std::string operationHash;
+	if (kind == "request" && !BeginV2Request(document, requestId, operationHash)) {
+		return;
+	}
 
 	if (kind == "request" && type == "vm.snapshot") {
-		BuildAndSendVmSnapshot(requestId);
+		const VmRegistrySnapshot snapshot = _vmRegistry.SnapshotWithEventSeq();
+		const nlohmann::json response = MakeVmSnapshotEnvelope(
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
+			snapshot.records, snapshot.eventSeq, requestId);
+		CompleteV2Request(requestId, operationHash, response);
+		SendV2Document(response);
 		return;
 	}
 
@@ -451,18 +487,22 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 			payload["accepted"] = true;
 			payload["vmId"] = VmProtocolId(vmId);
 			if (pauseId != 0) payload["pauseId"] = pauseId;
-			SendV2Document(MakeV2Envelope(
+			const nlohmann::json response = MakeV2Envelope(
 				"response", "debug.action", _protocolSession.AgentSessionId(),
-				_protocolSession.ConnectionEpoch(), requestId, 0, payload));
+				_protocolSession.ConnectionEpoch(), requestId, 0, payload);
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
 		} else {
 			nlohmann::json error = nlohmann::json::object();
 			error["code"] = vmId == 0 || !_emmyDebuggerManager.GetDebuggerByVmId(vmId)
 				? "VM_NOT_FOUND" : "STALE_PAUSE_REFERENCE";
 			error["message"] = "The requested VM action was rejected";
 			error["retryable"] = false;
-			SendV2Document(MakeV2Envelope(
+			const nlohmann::json response = MakeV2Envelope(
 				"response", "debug.action", _protocolSession.AgentSessionId(),
-				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
 		}
 		return;
 	}
@@ -473,6 +513,7 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 			? document["target"]["pauseId"].get<uint64_t>() : 0;
 		std::shared_ptr<EvalContext> context(new EvalContext());
 		context->requestId = requestId;
+		context->operationHash = operationHash;
 		context->vmId = vmId;
 		context->pauseId = pauseId;
 		const nlohmann::json& payload = document["payload"];
@@ -488,9 +529,11 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 				? "VM_NOT_FOUND" : "STALE_PAUSE_REFERENCE";
 			error["message"] = "The requested evaluation target is not active";
 			error["retryable"] = false;
-			SendV2Document(MakeV2Envelope(
+			const nlohmann::json response = MakeV2Envelope(
 				"response", "debug.eval", _protocolSession.AgentSessionId(),
-				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
 		}
 		return;
 	}
@@ -503,9 +546,11 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		payload["capabilities"] = nlohmann::json::array({
 			"vm.lifecycle", "vm.snapshot", "debug.legacy-v1"
 		});
-		SendV2Document(MakeV2Envelope(
+		const nlohmann::json response = MakeV2Envelope(
 			"response", "agent.describe", _protocolSession.AgentSessionId(),
-			_protocolSession.ConnectionEpoch(), requestId, 0, payload));
+			_protocolSession.ConnectionEpoch(), requestId, 0, payload);
+		CompleteV2Request(requestId, operationHash, response);
+		SendV2Document(response);
 		return;
 	}
 	if (kind != "request") {
@@ -519,6 +564,73 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 	SendV2Document(MakeV2Envelope(
 		"response", type.empty() ? "unknown" : type, _protocolSession.AgentSessionId(),
 		_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+}
+
+bool EmmyFacade::BeginV2Request(const nlohmann::json& document,
+	const std::string& requestId,
+	std::string& operationHash) {
+	if (requestId.empty() || requestId.size() > 128) {
+		nlohmann::json error = nlohmann::json::object();
+		error["code"] = "INVALID_REQUEST_ID";
+		error["message"] = "requestId must be non-empty and at most 128 bytes";
+		error["retryable"] = false;
+		SendV2Document(MakeV2Envelope("response", "request", _protocolSession.AgentSessionId(),
+			_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+		return false;
+	}
+	operationHash = document.dump();
+	const ProtocolSession::RequestDisposition disposition = _protocolSession.BeginRequest(
+		requestId, operationHash, document["connectionEpoch"].is_number_unsigned()
+			? document["connectionEpoch"].get<uint64_t>() : 0);
+	if (disposition == ProtocolSession::RequestDisposition::New) {
+		return true;
+	}
+	if (disposition == ProtocolSession::RequestDisposition::Duplicate) {
+		if (ReplayV2Request(requestId, operationHash)) {
+			return false;
+		}
+		nlohmann::json error = nlohmann::json::object();
+		error["code"] = "REQUEST_IN_PROGRESS";
+		error["message"] = "requestId is already being processed";
+		error["retryable"] = true;
+		SendV2Document(MakeV2Envelope("response", document["type"].is_string()
+			? document["type"].get<std::string>() : "request",
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), requestId,
+			0, nlohmann::json(), false, error));
+		return false;
+	}
+	nlohmann::json error = nlohmann::json::object();
+	error["code"] = disposition == ProtocolSession::RequestDisposition::Conflict
+		? "REQUEST_ID_REUSE" : "STALE_CONNECTION_EPOCH";
+	error["message"] = disposition == ProtocolSession::RequestDisposition::Conflict
+		? "requestId was reused for a different operation" : "request is not valid for this connection";
+	error["retryable"] = disposition == ProtocolSession::RequestDisposition::StaleEpoch;
+	SendV2Document(MakeV2Envelope("response", document["type"].is_string()
+		? document["type"].get<std::string>() : "request",
+		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), requestId,
+		0, nlohmann::json(), false, error));
+	return false;
+}
+
+void EmmyFacade::CompleteV2Request(const std::string& requestId,
+	const std::string& operationHash,
+	const nlohmann::json& response) {
+	_protocolSession.CompleteRequest(requestId, operationHash, response.dump(),
+		_protocolSession.ConnectionEpoch());
+}
+
+bool EmmyFacade::ReplayV2Request(const std::string& requestId,
+	const std::string& operationHash) {
+	std::string response;
+	if (!_protocolSession.CachedResponse(requestId, operationHash, response)) {
+		return false;
+	}
+	try {
+		SendV2Document(nlohmann::json::parse(response));
+		return true;
+	} catch (...) {
+		return false;
+	}
 }
 
 void EmmyFacade::OnVmLifecycleEvent(const VmLifecycleEvent& event) {
@@ -632,6 +744,7 @@ void EmmyFacade::OnEvalResult(std::shared_ptr<EvalContext> context) {
 			envelope["target"] = nlohmann::json::object();
 			if (context->vmId != 0) envelope["target"]["vmId"] = VmProtocolId(context->vmId);
 			if (context->pauseId != 0) envelope["target"]["pauseId"] = context->pauseId;
+			CompleteV2Request(context->requestId, context->operationHash, envelope);
 			SendV2Document(envelope);
 		} else {
 			transporter->Send(int(MessageCMD::EvalRsp), context->Serialize());

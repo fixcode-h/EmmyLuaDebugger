@@ -10,7 +10,12 @@ ProtoHandler::ProtoHandler(EmmyFacade *owner)
 
 void ProtoHandler::OnDispatch(nlohmann::json document) {
 	if (document["cmd"].is_number_integer()) {
-		switch (document["cmd"].get<MessageCMD>()) {
+		const MessageCMD command = document["cmd"].get<MessageCMD>();
+		if (_owner->IsAuthenticationRequired() && !_owner->IsAuthenticated() &&
+			command != MessageCMD::InitReq && command != MessageCMD::EnvelopeV2) {
+			return;
+		}
+		switch (command) {
 			case MessageCMD::EnvelopeV2: {
 				_owner->OnV2Envelope(document);
 				break;

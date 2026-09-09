@@ -38,12 +38,28 @@ int main() {
 	session.OnConnect(true);
 	Require(session.ConnectionEpoch() == 2, "reconnect increments epoch");
 	Require(session.AgentSessionId() == sessionId, "session id survives reconnect");
+	Require(session.AcceptIncomingEpoch(0), "missing epoch is accepted for legacy-compatible requests");
+	Require(session.AcceptIncomingEpoch(2), "current epoch is accepted");
+	Require(!session.AcceptIncomingEpoch(1), "old epoch is rejected");
+	const auto firstRequest = session.BeginRequest("r1", "hash-a", 2);
+	Require(firstRequest == ProtocolSession::RequestDisposition::New, "first request is new");
+	Require(session.BeginRequest("r1", "hash-a", 2) == ProtocolSession::RequestDisposition::Duplicate,
+		"same request is idempotent");
+	Require(session.BeginRequest("r1", "hash-b", 2) == ProtocolSession::RequestDisposition::Conflict,
+		"request id reuse is rejected");
+	session.CompleteRequest("r1", "hash-a", "{\"ok\":true}", 2);
+	std::string cached;
+	Require(session.CachedResponse("r1", "hash-a", cached) && cached == "{\"ok\":true}",
+		"completed response can be replayed");
+	Require(session.BeginRequest("old", "hash", 1) == ProtocolSession::RequestDisposition::StaleEpoch,
+		"old epoch request is rejected");
 
 	TransportAuth auth;
 	Require(!auth.IsRequired(), "auth is optional before a token is configured");
 	auth.SetExpectedToken("token-123");
 	Require(auth.IsRequired(), "configured auth token is required");
 	Require(auth.Verify("token-123"), "matching token is accepted");
+	Require(auth.VerifyForEpoch("token-123", 2), "matching token authenticates epoch");
 	Require(!auth.Verify("token-124"), "wrong token is rejected");
 	Require(!auth.Verify("token-123-extra"), "length mismatch is rejected");
 

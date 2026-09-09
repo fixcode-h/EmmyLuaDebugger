@@ -12,7 +12,7 @@ add_dependencies(
 target_include_directories(emmy_debugger PUBLIC
         ${emmy_debugger_SOURCE_DIR}/include
         ${emmy_SOURCE_DIR}/third-party/nlohmann/include
-        ${emmy_SOURCE_DIR}/third-party/libuv-1.29.0/include
+        ${emmy_SOURCE_DIR}/third-party/libuv-1.46.0/include
         PRIVATE src
 )
 

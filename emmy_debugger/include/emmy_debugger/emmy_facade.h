@@ -128,6 +128,14 @@ private:
 	void SendInitResponse();
 	void SendReadyResponse(uint64_t snapshotEventSeq);
 	uint64_t RegisterFallbackLuaVm(lua_State* L, const std::string& discovery);
+	bool BeginV2Request(const nlohmann::json& document,
+						const std::string& requestId,
+						std::string& operationHash);
+	void CompleteV2Request(const std::string& requestId,
+						  const std::string& operationHash,
+						  const nlohmann::json& response);
+	bool ReplayV2Request(const std::string& requestId,
+						 const std::string& operationHash);
 
 	// 使用平台相关的锁类型
 	EmmyMutex waitIDEMutex = EMMY_MUTEX_INIT;

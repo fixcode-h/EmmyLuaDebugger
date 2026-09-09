@@ -31,6 +31,9 @@ void ProtocolSession::OnConnect(bool success) {
 	connectionEpoch_.fetch_add(1, std::memory_order_relaxed);
 	negotiated_.store(false, std::memory_order_release);
 	ready_.store(false, std::memory_order_release);
+	std::lock_guard<std::mutex> lock(requestMutex_);
+	requests_.clear();
+	requestOrder_.clear();
 }
 
 void ProtocolSession::OnDisconnect() {
@@ -67,4 +70,65 @@ std::string ProtocolSession::NextRequestId(const std::string& prefix) {
 	std::ostringstream stream;
 	stream << prefix << "-" << requestSequence_.fetch_add(1, std::memory_order_relaxed) + 1;
 	return stream.str();
+}
+
+bool ProtocolSession::AcceptIncomingEpoch(uint64_t epoch) const {
+	return epoch == 0 || epoch == ConnectionEpoch();
+}
+
+ProtocolSession::RequestDisposition ProtocolSession::BeginRequest(
+	const std::string& requestId,
+	const std::string& operationHash,
+	uint64_t epoch) {
+	if (requestId.empty() || operationHash.empty()) {
+		return RequestDisposition::Invalid;
+	}
+	if (!AcceptIncomingEpoch(epoch)) {
+		return RequestDisposition::StaleEpoch;
+	}
+	std::lock_guard<std::mutex> lock(requestMutex_);
+	const auto it = requests_.find(requestId);
+	if (it == requests_.end()) {
+		requests_.insert(std::make_pair(requestId, RequestRecord{operationHash, std::string(), epoch}));
+		requestOrder_.push_back(requestId);
+		while (requestOrder_.size() > kMaxRememberedRequests) {
+			requests_.erase(requestOrder_.front());
+			requestOrder_.pop_front();
+		}
+		return RequestDisposition::New;
+	}
+	return it->second.operationHash == operationHash
+		? RequestDisposition::Duplicate
+		: RequestDisposition::Conflict;
+}
+
+void ProtocolSession::CompleteRequest(const std::string& requestId,
+	const std::string& operationHash,
+	const std::string& response,
+	uint64_t epoch) {
+	if (requestId.empty() || operationHash.empty() || !AcceptIncomingEpoch(epoch)) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(requestMutex_);
+	const auto it = requests_.find(requestId);
+	if (it == requests_.end()) {
+		return;
+	}
+	if (it->second.operationHash == operationHash) {
+		it->second.response = response;
+		it->second.connectionEpoch = epoch;
+	}
+}
+
+bool ProtocolSession::CachedResponse(const std::string& requestId,
+	const std::string& operationHash,
+	std::string& response) const {
+	std::lock_guard<std::mutex> lock(requestMutex_);
+	const auto it = requests_.find(requestId);
+	if (it == requests_.end() || it->second.operationHash != operationHash ||
+		it->second.response.empty()) {
+		return false;
+	}
+	response = it->second.response;
+	return true;
 }
