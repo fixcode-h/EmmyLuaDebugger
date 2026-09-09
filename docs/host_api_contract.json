@@ -1,0 +1,27 @@
+{
+  "apiVersion": 1,
+  "registrationIdZeroMeans": "INVALID_OR_FAILED",
+  "pendingRegistrationIsNonZero": true,
+  "createOrder": [
+    "host_lua_init_complete",
+    "Emmy_RegisterLuaVm",
+    "Emmy_NotifyLuaVmReady"
+  ],
+  "closeOrder": [
+    "Emmy_BeginLuaVmClose",
+    "lua_close",
+    "Emmy_EndLuaVmClose",
+    "Emmy_ReleaseLuaVmRegistration"
+  ],
+  "forbidden": [
+    "call_from_DllMain",
+    "read_lua_state_after_lua_close",
+    "register_temporary_userdata_header_state",
+    "static_link_second_emmy_facade"
+  ],
+  "fingerprint": {
+    "luaVersion": "5.4.3",
+    "luaIdSize": 256,
+    "spHook": true
+  }
+}
