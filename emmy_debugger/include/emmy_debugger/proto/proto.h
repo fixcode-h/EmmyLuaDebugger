@@ -52,6 +52,7 @@ public:
 
 class InitParams : public JsonProtocol {
 public:
+	std::string authToken;
 	std::string emmyHelperPath;     // emmyHelper 目录路径（插件资源目录）
 	std::string customHelperPath;   // 自定义 helper 目录路径（可选，可断点调试）
 	std::string emmyHelperName;     // 主 helper 脚本名称（默认 "emmyHelper"）

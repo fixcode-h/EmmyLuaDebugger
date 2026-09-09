@@ -29,6 +29,7 @@ target_sources(emmy_debugger
         src/transporter/socket_client_transporter.cpp
         src/transporter/socket_server_transporter.cpp
         src/transporter/transporter.cpp
+        src/transporter/transport_auth.cpp
 
         #src/debugger
         src/debugger/emmy_debugger.cpp
@@ -143,6 +144,7 @@ if(EMMY_VM_REGISTRY_TEST)
             ${emmy_SOURCE_DIR}/tests/protocol_v2_test.cpp
             src/proto/protocol_v2.cpp
             src/proto/protocol_session.cpp
+            src/transporter/transport_auth.cpp
     )
     target_include_directories(emmy_protocol_v2_test PRIVATE
             ${emmy_debugger_SOURCE_DIR}/include

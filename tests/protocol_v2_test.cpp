@@ -1,6 +1,7 @@
 #include "emmy_debugger/proto/protocol_v2.h"
 #include "emmy_debugger/proto/protocol_session.h"
 #include "emmy_debugger/transporter/transporter.h"
+#include "emmy_debugger/transporter/transport_auth.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -37,6 +38,14 @@ int main() {
 	session.OnConnect(true);
 	Require(session.ConnectionEpoch() == 2, "reconnect increments epoch");
 	Require(session.AgentSessionId() == sessionId, "session id survives reconnect");
+
+	TransportAuth auth;
+	Require(!auth.IsRequired(), "auth is optional before a token is configured");
+	auth.SetExpectedToken("token-123");
+	Require(auth.IsRequired(), "configured auth token is required");
+	Require(auth.Verify("token-123"), "matching token is accepted");
+	Require(!auth.Verify("token-124"), "wrong token is rejected");
+	Require(!auth.Verify("token-123-extra"), "length mismatch is rejected");
 
 	const nlohmann::json ready = MakeV2Envelope(
 		"response", "agent.ready", session.AgentSessionId(), session.ConnectionEpoch(),

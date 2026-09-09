@@ -28,6 +28,7 @@
 #include "emmy_debugger/vm/host_vm_registry.h"
 #include "emmy_debugger/proto/protocol_session.h"
 #include "emmy_debugger/proto/protocol_v2.h"
+#include "emmy_debugger/transporter/transport_auth.h"
 #include "proto/proto_handler.h"
 
 enum class LogType
@@ -92,6 +93,10 @@ public:
 	WorkMode GetWorkMode();
 
 	void InitReq(InitParams &params);
+	bool AuthenticateInit(const std::string& token);
+	void SetExpectedAuthToken(const std::string& token);
+	bool IsAuthenticated() const;
+	bool IsAuthenticationRequired() const;
 
 	void ReadyReq();
 
@@ -144,6 +149,8 @@ private:
 	NativeVmRegistry _vmRegistry;
 	HostVmRegistry _hostVmRegistry;
 	ProtocolSession _protocolSession;
+	TransportAuth _transportAuth;
+	std::atomic<bool> _authenticated;
 
 	struct PendingV2Event {
 		VmLifecycleEvent event;

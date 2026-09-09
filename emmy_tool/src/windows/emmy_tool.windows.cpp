@@ -254,8 +254,9 @@ int EmmyTool::Attach() {
 	const int pid = _cmd.Get<int>("p");
 	std::string dir = _cmd.Get<std::string>("dir");
 	std::string dll = _cmd.Get<std::string>("dll");
+	std::string authToken = _cmd.Get<std::string>("auth-token");
 	auto capture = _cmd.Get<bool>("capture-log");
-	if (!InjectDll(pid, dir.c_str(), dll.c_str(), capture)) {
+	if (!InjectDll(pid, dir.c_str(), dll.c_str(), capture, authToken)) {
 		return -1;
 	}
 

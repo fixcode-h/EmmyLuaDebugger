@@ -19,6 +19,7 @@ int main(int argc, char **argv) {
 	commandLine.Add<std::string>("dir");
 	// dll
 	commandLine.Add<std::string>("dll");
+	commandLine.Add<std::string>("auth-token");
 	// exe
 	commandLine.Add<std::string>("exe");
 	// work space

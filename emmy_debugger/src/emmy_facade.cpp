@@ -83,6 +83,7 @@ EmmyFacade::EmmyFacade()
 	  isWaitingForIDE(false),
 	  workMode(WorkMode::EmmyCore),
 	  readyHook(false),
+	  _authenticated(false),
 	  _protoHandler(this) {
 	_vmRegistry.SetEventSink([this](const VmLifecycleEvent& event) {
 		OnVmLifecycleEvent(event);
@@ -229,6 +230,9 @@ int EmmyFacade::BreakHere(lua_State *L) {
 
 int EmmyFacade::OnConnect(bool suc) {
 	_protocolSession.OnConnect(suc);
+	if (suc) {
+		_authenticated.store(false, std::memory_order_release);
+	}
 	return 0;
 }
 
@@ -236,6 +240,7 @@ int EmmyFacade::OnDisconnect() {
 	isIDEReady = false;
 	isWaitingForIDE = false;
 	_protocolSession.OnDisconnect();
+	_authenticated.store(false, std::memory_order_release);
 
 	_emmyDebuggerManager.OnDisconnect();
 
@@ -288,6 +293,38 @@ void EmmyFacade::InitReq(InitParams & params) {
 	StartDebug();
 	ReconcileHostLuaVms();
 	SendInitResponse();
+}
+
+bool EmmyFacade::AuthenticateInit(const std::string& token) {
+	if (!_transportAuth.Verify(token)) {
+		nlohmann::json error = nlohmann::json::object();
+		error["code"] = "NOT_AUTHORIZED";
+		error["message"] = "Emmy Agent authentication failed";
+		error["retryable"] = false;
+		SendV2Document(MakeV2Envelope(
+			"error", "agent.auth", _protocolSession.AgentSessionId(),
+			_protocolSession.ConnectionEpoch(), std::string(), 0, nlohmann::json(), false, error));
+		if (transporter != nullptr) {
+			transporter->Stop();
+		}
+		OnDisconnect();
+		return false;
+	}
+	_authenticated.store(true, std::memory_order_release);
+	return true;
+}
+
+void EmmyFacade::SetExpectedAuthToken(const std::string& token) {
+	_transportAuth.SetExpectedToken(token);
+	_authenticated.store(false, std::memory_order_release);
+}
+
+bool EmmyFacade::IsAuthenticated() const {
+	return _authenticated.load(std::memory_order_acquire);
+}
+
+bool EmmyFacade::IsAuthenticationRequired() const {
+	return _transportAuth.IsRequired();
 }
 
 void EmmyFacade::ReadyReq() {

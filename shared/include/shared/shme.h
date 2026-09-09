@@ -17,7 +17,8 @@ struct SharedFile {
 
 struct RemoteThreadParam
 {
-	BOOL bRedirect;
+	BOOL bRedirect = FALSE;
+	char authToken[128] = {};
 };
 
 // Size (in bytes) of data to be shared

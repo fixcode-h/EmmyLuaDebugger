@@ -33,6 +33,9 @@ nlohmann::json InitParams::Serialize() {
 }
 
 void InitParams::Deserialize(nlohmann::json json) {
+	if (json["authToken"].is_string()) {
+		authToken = json["authToken"];
+	}
 	if (json["emmyHelperPath"].is_string()) {
 		emmyHelperPath = json["emmyHelperPath"];
 	}

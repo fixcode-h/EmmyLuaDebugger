@@ -424,6 +424,12 @@ int StartupHookMode(void* lpParam)
 	// 因为 DllMain 在 loader lock 下执行，CRT 可能还没有完全初始化
 	EmmyFacade::Get().SetWorkMode(WorkMode::Attach);
 	EmmyFacade::Get().StartHook = FindAndHook;
+	if (lpParam != nullptr) {
+		const auto* params = static_cast<const RemoteThreadParam*>(lpParam);
+		if (params->authToken[0] != '\0') {
+			EmmyFacade::Get().SetExpectedAuthToken(params->authToken);
+		}
+	}
 	
 	const int pid = (int)GetCurrentProcessId();
 	EmmyFacade::Get().StartupHookMode(pid);

@@ -40,7 +40,8 @@ void SetBreakpoint(HANDLE hProcess, LPVOID entryPoint, bool set, BYTE *data);
 
 bool InjectDllForProcess(HANDLE hProcess, const char *dllDir, const char *dllFileName);
 
-bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture);
+bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture,
+	const std::string& authToken = std::string());
 
 void ReceiveLog(DWORD processId);
 

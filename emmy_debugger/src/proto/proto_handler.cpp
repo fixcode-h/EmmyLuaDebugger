@@ -18,10 +18,15 @@ void ProtoHandler::OnDispatch(nlohmann::json document) {
 			case MessageCMD::InitReq: {
 				InitParams params;
 				params.Deserialize(document);
-				OnInitReq(params);
+				if (_owner->AuthenticateInit(params.authToken)) {
+					OnInitReq(params);
+				}
 				break;
 			}
 			case MessageCMD::ReadyReq: {
+				if (_owner->IsAuthenticationRequired() && !_owner->IsAuthenticated()) {
+					break;
+				}
 				OnReadyReq();
 				break;
 			}

@@ -254,7 +254,8 @@ bool IsBeingInjected(DWORD processId, LPCSTR moduleFileName) {
 	return result;
 }
 
-bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture) {
+bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture,
+	const std::string& authToken) {
 	if (IsBeingInjected(processId, dllFileName)) {
 		MessageEvent("The process already attached.");
 		return true;
@@ -288,11 +289,17 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 
 
 	void *lpParam = nullptr;
-	if (capture) {
+	if (capture || !authToken.empty()) {
 		lpParam = (void *) VirtualAllocEx(process, 0, sizeof(RemoteThreadParam), MEM_COMMIT,
 		                                  PAGE_READWRITE);
-		RemoteThreadParam param;
-		param.bRedirect = TRUE;
+		RemoteThreadParam param{};
+		param.bRedirect = capture ? TRUE : FALSE;
+		if (!authToken.empty()) {
+			const size_t copyLength = authToken.size() < sizeof(param.authToken) - 1
+				? authToken.size() : sizeof(param.authToken) - 1;
+			memcpy(param.authToken, authToken.data(), copyLength);
+			param.authToken[copyLength] = '\0';
+		}
 
 		::WriteProcessMemory(process, lpParam, &param, sizeof(RemoteThreadParam), NULL);
 	}
@@ -315,9 +322,16 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 
 			CloseHandle(thread);
 			success = true;
+			if (lpParam != nullptr) {
+				VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
+				lpParam = nullptr;
+			}
 		} else {
 			success = false;
 		}
+	}
+	if (lpParam != nullptr) {
+		VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
 	}
 
 	// Reset dll directory
