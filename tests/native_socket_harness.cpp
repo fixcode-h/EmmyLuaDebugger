@@ -127,14 +127,14 @@ public:
 
 	void Send(int command, const nlohmann::json& document) {
 		const std::string frame = std::to_string(command) + "\n" + document.dump() + "\n";
-		if (handle_ != INVALID_HANDLE_VALUE) {
 #ifdef _WIN32
+		if (handle_ != INVALID_HANDLE_VALUE) {
 			DWORD written = 0;
 			Require(WriteFile(handle_, frame.data(), static_cast<DWORD>(frame.size()), &written, nullptr) &&
 				written == frame.size(), "pipe frame sent");
 			return;
-#endif
 		}
+#endif
 		for (size_t offset = 0; offset < frame.size();) {
 			const int written = ::send(socket_, frame.data() + offset,
 				static_cast<int>(frame.size() - offset), 0);
@@ -150,13 +150,13 @@ public:
 	}
 
 	void Close() {
-		if (handle_ != INVALID_HANDLE_VALUE) {
 #ifdef _WIN32
+		if (handle_ != INVALID_HANDLE_VALUE) {
 			CloseHandle(handle_);
 			handle_ = INVALID_HANDLE_VALUE;
-#endif
 			return;
 		}
+#endif
 		if (socket_ == kInvalidSocket) return;
 		CloseSocket(socket_);
 		socket_ = kInvalidSocket;
@@ -166,8 +166,8 @@ private:
 	std::string ReadLine(int timeoutMs) {
 		std::string line;
 		for (;;) {
-			if (handle_ != INVALID_HANDLE_VALUE) {
 #ifdef _WIN32
+			if (handle_ != INVALID_HANDLE_VALUE) {
 				DWORD available = 0;
 				const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 				for (;;) {
@@ -183,8 +183,8 @@ private:
 				line.push_back(ch);
 				Require(line.size() <= 1024 * 1024, "response line is bounded");
 				continue;
-#endif
 			}
+#endif
 			char ch = 0;
 			fd_set readSet;
 			FD_ZERO(&readSet);
