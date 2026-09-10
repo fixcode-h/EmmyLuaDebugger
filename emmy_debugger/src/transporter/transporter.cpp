@@ -38,7 +38,8 @@ Transporter::Transporter(bool server):
 	disconnectNotified(false),
 	protocolFailed(false)
 {
-	loop = uv_loop_new();
+	loop = new uv_loop_t;
+	if (uv_loop_init(loop) != 0) { delete loop; loop = nullptr; }
 	asyncInitialized.store(false);
 	stopRequested.store(false);
 	bufSize = 10 * 1024;
@@ -431,6 +432,7 @@ void Transporter::DrainSendQueue() {
 		request->buf = uv_buf_init(it->data, static_cast<unsigned int>(it->len));
 		if (uv_write(&request->req, it->handler, &request->buf, 1, after_write) < 0) {
 			free(it->data);
+			OnWriteComplete(it->len);
 			delete request;
 		}
 	}
