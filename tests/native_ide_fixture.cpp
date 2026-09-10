@@ -23,13 +23,14 @@ void Require(bool condition, const std::string& message) {
 struct Control {
     std::atomic<bool> stop{false};
     std::atomic<bool> reset{false};
+    std::atomic<bool> closeVm{false};
     std::mutex mutex;
     std::condition_variable completed;
     bool done = false;
 };
 }
 
-// 独立测试宿主：stdin 接受 reset/stop，EOF 也会关闭；Lua 仅在主线程执行。
+// 独立测试宿主：stdin 接受 reset/close-vm/stop，EOF 也会关闭；Lua 仅在主线程执行。
 // 生产插件通过现有 pipe 协议连接，不提供测试专用调试协议或授权后门。
 int main(int argc, char** argv) {
     std::string pipeName, sourcePath, sourceHash;
@@ -82,7 +83,15 @@ int main(int argc, char** argv) {
     std::thread([control, vmId] {
         std::string command;
         while (std::getline(std::cin, command)) {
+            // PowerShell/.NET 的 UTF-8 writer 可能在第一条命令前发送 BOM。
+            if (command.compare(0, 3, "\xEF\xBB\xBF") == 0) command.erase(0, 3);
+            if (!command.empty() && command.back() == '\r') command.pop_back();
             if (command == "reset") control->reset.store(true);
+            else if (command == "close-vm") {
+                control->closeVm.store(true);
+                // 这里只关闭请求入口并唤醒暂停；lua_close 仍由 owner 主线程调用。
+                Emmy_BeginLuaVmClose(vmId, "fixture-close-vm");
+            }
             else if (command == "stop") break;
         }
         control->stop.store(true);
@@ -95,20 +104,29 @@ int main(int argc, char** argv) {
             Emmy_BeginLuaVmClose(vmId, "fixture-watchdog");
         }
     });
+    const auto closeVm = [&] {
+        if (state == nullptr) return;
+        Require(Emmy_BeginLuaVmClose(vmId, "fixture-owner-close") != 0, "VM close begins");
+        lua_close(state);
+        state = nullptr;
+        Require(Emmy_EndLuaVmClose(vmId) && Emmy_ReleaseLuaVmRegistration(vmId), "VM close completes");
+        std::cout << "{\"vmClosed\":true}" << std::endl;
+    };
     std::cout << "{\"ready\":true,\"vmId\":\"" << vmId << "\"}" << std::endl;
     while (!control->stop.load()) {
-        if (control->reset.exchange(false)) {
+        if (control->closeVm.exchange(false)) closeVm();
+        if (state != nullptr && control->reset.exchange(false)) {
             Require(Emmy_ResetLuaVmContext(vmId, "fixture-reset") != 0, "context reset");
             registerSource();
         }
-        Require(luaL_loadbuffer(state, script.data(), script.size(), chunkName.c_str()) == 0,
-            "Lua source compiles");
-        Require(lua_pcall(state, 0, 0, 0) == 0, "Lua script completes");
+        if (state != nullptr) {
+            Require(luaL_loadbuffer(state, script.data(), script.size(), chunkName.c_str()) == 0,
+                "Lua source compiles");
+            Require(lua_pcall(state, 0, 0, 0) == 0, "Lua script completes");
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    Require(Emmy_BeginLuaVmClose(vmId, "fixture-exit") != 0, "VM close begins");
-    lua_close(state);
-    Require(Emmy_EndLuaVmClose(vmId) && Emmy_ReleaseLuaVmRegistration(vmId), "VM close completes");
+    closeVm();
     facade.Destroy();
     {
         std::lock_guard<std::mutex> lock(control->mutex);
