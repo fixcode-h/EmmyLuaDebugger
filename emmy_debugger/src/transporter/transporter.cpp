@@ -22,6 +22,12 @@
 #include "emmy_debugger/emmy_facade.h"
 #include "nlohmann/json.hpp"
 
+namespace {
+void CloseRemainingHandle(uv_handle_t* handle, void*) {
+	if (handle != nullptr && !uv_is_closing(handle)) uv_close(handle, nullptr);
+}
+}
+
 Transporter::Transporter(bool server):
 	receiveSize(0),
 	readHead(true),
@@ -54,7 +60,11 @@ Transporter::~Transporter()
 		sendQueue.clear();
 	}
 	if (loop != nullptr) {
-		uv_loop_close(loop);
+		if (uv_loop_close(loop) != 0) {
+			uv_walk(loop, CloseRemainingHandle, nullptr);
+			while (uv_loop_alive(loop)) uv_run(loop, UV_RUN_DEFAULT);
+			uv_loop_close(loop);
+		}
 		delete loop;
 		loop = nullptr;
 	}
@@ -361,14 +371,21 @@ void Transporter::Run()
 	if (uv_async_init(loop, &sendAsync, OnSendAsync) != 0) return;
 	sendAsync.data = this;
 	asyncInitialized.store(true, std::memory_order_release);
-	if (!running.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
-	while (running.load(std::memory_order_acquire) || uv_loop_alive(loop))
-		uv_run(loop, UV_RUN_DEFAULT);
+	bool hasQueued = false;
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		hasQueued = !sendQueue.empty();
+	}
+	if (!running.load(std::memory_order_acquire) || hasQueued) uv_async_send(&sendAsync);
+	while (running.load(std::memory_order_acquire) || uv_loop_alive(loop)) {
+		uv_run(loop, UV_RUN_NOWAIT);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 	DrainSendQueue();
 	asyncInitialized.store(false, std::memory_order_release);
 	if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(&sendAsync)))
 		uv_close(reinterpret_cast<uv_handle_t*>(&sendAsync), nullptr);
-	uv_run(loop, UV_RUN_DEFAULT);
+	while (uv_loop_alive(loop)) uv_run(loop, UV_RUN_NOWAIT);
 }
 
 int Transporter::Stop()

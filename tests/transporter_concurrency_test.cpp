@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+#include <chrono>
 #include <vector>
 
 namespace {
@@ -28,8 +29,12 @@ int main() {
 	SocketServerTransporter server;
 	std::string error;
 	Require(server.Listen("127.0.0.1", 43199, error), "localhost server starts");
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	SocketClientTransporter client;
-	Require(client.Connect("127.0.0.1", 43199, error), "localhost client connects");
+	if (!client.Connect("127.0.0.1", 43199, error)) {
+		std::cerr << "client connect error: " << error << std::endl;
+		std::exit(1);
+	}
 
 	std::atomic<bool> go(false);
 	std::vector<std::thread> senders;
