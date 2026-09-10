@@ -1,0 +1,8 @@
+{"name":"malformed-json","input":"{\"jsonrpc\":2,","expected":{"accepted":false,"error":"MALFORMED_JSON"}}
+{"name":"unknown-v2-type","input":{"version":2,"type":"vm.unknown","requestId":"fuzz-unknown"},"expected":{"accepted":false,"error":"UNKNOWN_MESSAGE_TYPE"}}
+{"name":"duplicate-request","input":{"version":2,"type":"request","requestId":"fuzz-duplicate","command":"vm.list"},"expected":{"first":"accepted","second":"REQUEST_ID_REUSED"}}
+{"name":"old-epoch","input":{"version":2,"type":"request","requestId":"fuzz-old-epoch","command":"debug.continue","target":{"vmId":"vm-1","pauseId":7,"contextGeneration":1,"sourceEpoch":1}},"expected":{"accepted":false,"error":"STALE_CONTEXT"}}
+{"name":"invalid-vm","input":{"version":2,"type":"request","requestId":"fuzz-invalid-vm","command":"debug.continue","target":{"vmId":"not-a-vm","pauseId":1}},"expected":{"accepted":false,"error":"VM_NOT_FOUND"}}
+{"name":"invalid-pause","input":{"version":2,"type":"request","requestId":"fuzz-invalid-pause","command":"debug.continue","target":{"vmId":"vm-1","pauseId":0}},"expected":{"accepted":false,"error":"PAUSE_ID_REQUIRED"}}
+{"name":"invalid-frame","input":{"version":2,"type":"request","requestId":"fuzz-invalid-frame","command":"debug.evaluate","target":{"vmId":"vm-1","pauseId":2,"frameId":"frame-old-"}},"expected":{"accepted":false,"error":"STALE_PAUSE_REFERENCE"}}
+{"name":"oversized-request-id","input":{"version":2,"type":"request","requestId":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","command":"vm.list"},"expected":{"accepted":false,"error":"REQUEST_TOO_LARGE"}}
