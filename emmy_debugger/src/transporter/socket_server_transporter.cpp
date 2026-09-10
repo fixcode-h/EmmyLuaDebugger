@@ -65,7 +65,12 @@ bool SocketServerTransporter::Listen(const std::string& host, int port, std::str
 		return false;
 	}
 
-	uv_tcp_bind(&uvServer, reinterpret_cast<const struct sockaddr*>(&addr), 0);
+	const int bindStatus = uv_tcp_bind(&uvServer,
+		reinterpret_cast<const struct sockaddr*>(&addr), 0);
+	if (bindStatus != 0) {
+		err = uv_strerror(bindStatus);
+		return false;
+	}
 	const int r = uv_listen(reinterpret_cast<uv_stream_t*>(&uvServer), SOMAXCONN, on_new_connection);
 	if (r) {
 		err = uv_strerror(r);

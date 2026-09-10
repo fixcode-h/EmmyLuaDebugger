@@ -368,7 +368,11 @@ void Transporter::JoinEventLoop()
 void Transporter::Run()
 {
 	running.store(!stopRequested.load(std::memory_order_acquire), std::memory_order_release);
-	if (uv_async_init(loop, &sendAsync, OnSendAsync) != 0) return;
+	const int asyncStatus = uv_async_init(loop, &sendAsync, OnSendAsync);
+	if (asyncStatus != 0) {
+		std::fprintf(stderr, "transport async init failed: %s\n", uv_strerror(asyncStatus));
+		return;
+	}
 	sendAsync.data = this;
 	asyncInitialized.store(true, std::memory_order_release);
 	bool hasQueued = false;
