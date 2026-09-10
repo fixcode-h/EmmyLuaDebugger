@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <cstring>
 #include <limits>
 #include "emmy_debugger/emmy_facade.h"
 #include "nlohmann/json.hpp"
@@ -447,6 +448,9 @@ void Transporter::OnWriteComplete(size_t len) {
 
 bool Transporter::ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err) 
 {
+	if (addr == nullptr) { err = "null socket address"; return false; }
+	std::memset(addr, 0, sizeof(*addr));
+	if (uv_ip4_addr(host.c_str(), port, reinterpret_cast<sockaddr_in*>(addr)) == 0) return true;
 	auto const loop = uv_default_loop();
 	uv_getaddrinfo_t resolver;
 	int res = uv_getaddrinfo(loop, &resolver, nullptr, host.c_str(),
