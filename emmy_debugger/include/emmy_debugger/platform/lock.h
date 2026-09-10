@@ -153,8 +153,8 @@ inline void EmmyCondNotifyOne(std::condition_variable& cv) {
 using EmmyMutex = std::mutex;
 using EmmyCondVar = std::condition_variable;
 using SRWUniqueLock = std::unique_lock<std::mutex>;
-#define EMMY_MUTEX_INIT
-#define EMMY_CONDVAR_INIT
+#define EMMY_MUTEX_INIT {}
+#define EMMY_CONDVAR_INIT {}
 
 #endif
 
