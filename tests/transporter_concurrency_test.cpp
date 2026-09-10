@@ -11,6 +11,7 @@
 #include <chrono>
 #include <vector>
 #include <string>
+#include "emmy_debugger/platform/lock.h"
 
 class CountingClient : public SocketClientTransporter {
 public:
@@ -55,9 +56,37 @@ void Require(bool value, const char* message) {
 		std::exit(1);
 	}
 }
+
+void CheckConditionWaitDeadlineAndWake() {
+	EmmyMutex mutex = EMMY_MUTEX_INIT;
+	EmmyCondVar condition = EMMY_CONDVAR_INIT;
+	bool ready = false;
+	{
+		SRWUniqueLock lock(mutex);
+		const auto started = std::chrono::steady_clock::now();
+		const bool signaled = EMMY_COND_WAIT_FOR(condition, lock,
+			[&ready] { return ready; }, std::chrono::milliseconds(100));
+		const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - started).count();
+		Require(!signaled && elapsed >= 80, "condition wait honors deadline");
+	}
+	std::thread notifier([&] {
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		SRWUniqueLock lock(mutex);
+		ready = true;
+		EMMY_COND_NOTIFY_ALL(condition);
+	});
+	{
+		SRWUniqueLock lock(mutex);
+		Require(EMMY_COND_WAIT_FOR(condition, lock, [&ready] { return ready; },
+			std::chrono::seconds(1)), "condition wait wakes on predicate");
+	}
+	notifier.join();
+}
 }
 
 int main(int argc, char** argv) {
+	CheckConditionWaitDeadlineAndWake();
 	// Stop before an event loop exists must be harmless and must not hang
 	// destruction.
 	{
