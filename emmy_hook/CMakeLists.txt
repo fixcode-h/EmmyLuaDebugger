@@ -17,6 +17,7 @@ target_sources(emmy_hook PRIVATE
         src/dllmain.cpp
         src/emmy_hook.cpp
         src/emmy_hook.windows.cpp
+        src/hook_manager.cpp
 
 
         #src/libpe

@@ -224,12 +224,12 @@ bool ExecuteRemoteKernelFuntion(HANDLE process, const char *functionName, LPVOID
 
 	if (thread != nullptr) {
 		const DWORD waitResult = WaitForSingleObject(thread, kRemoteThreadTimeoutMs);
-		if (waitResult == WAIT_TIMEOUT) {
+		if (waitResult != WAIT_OBJECT_0) {
 			if (timedOut != nullptr) *timedOut = true;
 			CloseHandle(thread);
 			return false;
 		}
-		if (waitResult != WAIT_OBJECT_0 || !GetExitCodeThread(thread, &exitCode)) {
+		if (!GetExitCodeThread(thread, &exitCode)) {
 			CloseHandle(thread);
 			return false;
 		}
@@ -284,10 +284,14 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 		void *dllDirRemote = RemoteDup(process, dllDir, strlen(dllDir) + 1);
 		bool dllDirTimedOut = false;
 		if (dllDirRemote == nullptr ||
-			!ExecuteRemoteKernelFuntion(process, "SetDllDirectoryA", dllDirRemote, exitCode, &dllDirTimedOut)) {
+			!ExecuteRemoteKernelFuntion(process, "SetDllDirectoryA", dllDirRemote, exitCode, &dllDirTimedOut) || exitCode == 0) {
 			success = false;
 		}
 		if (dllDirRemote != nullptr && !dllDirTimedOut) VirtualFreeEx(process, dllDirRemote, 0, MEM_RELEASE);
+		if (!success) {
+			CloseHandle(process);
+			return false;
+		}
 
 		// Load the DLL.
 		void *remoteFileName = RemoteDup(process, dllFileName, strlen(dllFileName) + 1);
@@ -297,7 +301,7 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 			success = false;
 		}
 		if (remoteFileName != nullptr && !loadTimedOut) VirtualFreeEx(process, remoteFileName, 0, MEM_RELEASE);
-		if (!success || exitCode == 0) {
+		if (!success || !IsBeingInjected(processId, dllFileName)) {
 			MessageEvent("Failed to load library", MessageType_Error);
 			CloseHandle(process);
 			return false;
@@ -344,14 +348,14 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 
 		if (thread != nullptr) {
 			const DWORD waitResult = WaitForSingleObject(thread, kRemoteThreadTimeoutMs);
-			if (waitResult == WAIT_TIMEOUT) {
+			if (waitResult != WAIT_OBJECT_0) {
 				startupTimedOut = true;
 				CloseHandle(thread);
 				success = false;
 			} else {
-				GetExitCodeThread(thread, &exitCode);
+				const bool gotExitCode = GetExitCodeThread(thread, &exitCode) != FALSE;
 				CloseHandle(thread);
-				success = waitResult == WAIT_OBJECT_0 && IsBeingInjected(processId, dllFileName);
+				success = gotExitCode && exitCode == 0;
 			}
 			if (lpParam != nullptr && !startupTimedOut) {
 				VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
@@ -384,56 +388,9 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 
 // 和InjectDll 实现不同的是，不会closeHandle
 bool InjectDllForProcess(HANDLE hProcess, const char *dllDir, const char *dllFileName) {
-	bool success = true;
-	DWORD exitCode = 0;
-
-	// Set dll directory
-	void *dllDirRemote = RemoteDup(hProcess, dllDir, strlen(dllDir) + 1);
-	ExecuteRemoteKernelFuntion(hProcess, "SetDllDirectoryA", dllDirRemote, exitCode);
-	VirtualFreeEx(hProcess, dllDirRemote, 0, MEM_RELEASE);
-
-	// Load the DLL.
-	void *remoteFileName = RemoteDup(hProcess, dllFileName, strlen(dllFileName) + 1);
-	success &= ExecuteRemoteKernelFuntion(hProcess, "LoadLibraryA", remoteFileName, exitCode);
-	VirtualFreeEx(hProcess, remoteFileName, 0, MEM_RELEASE);
-	if (!success || exitCode == 0) {
-		MessageEvent("Failed to load library", MessageType_Error);
-		return false;
-	}
-
-	// Read shared data & call 'StartupHookMode()'
-	TSharedData data;
-	if (ReadSharedData(GetProcessId(hProcess), data)) {
-		DWORD threadId;
-		HANDLE thread = CreateRemoteThread(hProcess,
-		                                   nullptr,
-		                                   0,
-		                                   reinterpret_cast<LPTHREAD_START_ROUTINE>(data.lpInit),
-		                                   nullptr,
-		                                   0,
-		                                   &threadId);
-
-		if (thread != nullptr) {
-			const DWORD waitResult = WaitForSingleObject(thread, kRemoteThreadTimeoutMs);
-			if (waitResult == WAIT_TIMEOUT) {
-				CloseHandle(thread);
-				return false;
-			}
-			GetExitCodeThread(thread, &exitCode);
-			CloseHandle(thread);
-			success = waitResult == WAIT_OBJECT_0;
-		} else {
-			success = false;
-		}
-	}
-
-	// Reset dll directory
-	ExecuteRemoteKernelFuntion(hProcess, "SetDllDirectoryA", nullptr, exitCode);
-
-	if (success) {
-		MessageEvent("Successfully inject dll!");
-	}
-	return success;
+	// Reuse the bounded injection path, retaining the caller's process handle.
+	const DWORD processId = GetProcessId(hProcess);
+	return processId != 0 && InjectDll(processId, dllDir, dllFileName, false, std::string(), nullptr);
 }
 
 

@@ -3,6 +3,7 @@
 #include <set>
 #include <vector>
 #include <unordered_map>
+#include <chrono>
 #include "emmy_debugger/emmy_facade.h"
 #include "emmy_debugger/api/lua_api.h"
 #include <ShlObj.h>
@@ -13,6 +14,7 @@
 #include "io.h"
 #include "emmy_debugger/transporter/socket_server_transporter.h"
 #include "shared/shme.h"
+#include "hook_manager.h"
 
 
 typedef TRACED_HOOK_HANDLE HOOK_HANDLE;
@@ -43,9 +45,8 @@ LoadLibraryExW_t LoadLibraryExW_dll = nullptr;
 // 完全不需要运行时初始化，避免了 std::mutex 在 DLL 加载场景下的初始化问题
 // SRWLOCK 比 CRITICAL_SECTION 更轻量，且不需要调用 InitializeCriticalSection
 static SRWLOCK g_srwPostLoadModule = SRWLOCK_INIT;
-static SRWLOCK g_srwHookList = SRWLOCK_INIT;
 static std::set<std::string> g_loadedModules;
-static std::vector<HOOK_HANDLE> g_hookList;
+static HookManager g_hookManager;
 
 void UninstallAllHooks();
 
@@ -61,15 +62,32 @@ HOOK_STATUS Hook(void* InEntryPoint,
 		InHookProc,
 		InCallback,
 		hHook);
-	if (status != 0) return status;
+	if (status != 0) {
+		delete hHook;
+		return status;
+	}
 	status = LhSetExclusiveACL(ACLEntries, 0, hHook);
 	if (status != 0) {
 		LhUninstallHook(hHook);
+		delete hHook;
 		return status;
 	}
-	AcquireSRWLockExclusive(&g_srwHookList);
-	g_hookList.push_back(hHook);
-	ReleaseSRWLockExclusive(&g_srwHookList);
+	HookManager::HookChainRecord chain;
+	chain.emmyHook = reinterpret_cast<void*>(InHookProc);
+	chain.owner = "EmmyAttach";
+	if (!g_hookManager.AddHook(hHook,
+		[](void* handle) {
+			const auto hook = reinterpret_cast<HOOK_HANDLE>(handle);
+			if (LhUninstallHook(hook) != 0) return false;
+			// EasyHook clears the trace handle synchronously; its trampoline is
+			// reclaimed separately by LhWaitForPendingRemovals.
+			delete hook;
+			return true;
+		}, chain)) {
+		LhUninstallHook(hHook);
+		delete hHook;
+		return static_cast<HOOK_STATUS>(-1);
+	}
 	return status;
 }
 
@@ -80,12 +98,20 @@ HOOK_STATUS UnHook(HOOK_HANDLE InHandle)
 	return status;
 }
 
+// Lua calls (including pcallk continuations) may longjmp. Count only Emmy's
+// work; a C++ scope must never remain active across the host's Lua execution.
+// EasyHook owns the lifetime of the original-call trampoline independently.
+void AttachFromHook(lua_State* L) {
+	HookManager::CallbackScope callback(g_hookManager);
+	if (callback) EmmyFacade::Get().Attach(L);
+}
+
 int lua_pcall_worker(lua_State* L, int nargs, int nresults, int errfunc)
 {
 	LPVOID lp;
 	LhBarrierGetCallback(&lp);
 	const auto pcall = (_lua_pcall)lp;
-	EmmyFacade::Get().Attach(L);
+	AttachFromHook(L);
 	return pcall(L, nargs, nresults, errfunc);
 }
 
@@ -94,17 +120,17 @@ int lua_pcallk_worker(lua_State* L, int nargs, int nresults, int errfunc, lua_KC
 	LPVOID lp;
 	LhBarrierGetCallback(&lp);
 	const auto pcallk = (_lua_pcallk)lp;
-	EmmyFacade::Get().Attach(L);
+	AttachFromHook(L);
 	return pcallk(L, nargs, nresults, errfunc, ctx, k);
 }
 
 int lua_error_worker(lua_State* L)
 {
 	typedef int (*dll_lua_error)(lua_State*);
-	EmmyFacade::Get().Attach(L);
 	LPVOID lp;
 	LhBarrierGetCallback(&lp);
 	const auto error = (dll_lua_error)lp;
+	AttachFromHook(L);
 	// EmmyFacade::Get().BreakHere(L);
 	return error(L);
 }
@@ -114,7 +140,7 @@ int lua_resume_worker_54(lua_State* L, lua_State* from, int nargs, int* nresults
 	LPVOID lp;
 	LhBarrierGetCallback(&lp);
 	const auto luaResume = (_lua_resume_54)lp;
-	EmmyFacade::Get().Attach(L);
+	AttachFromHook(L);
 	return luaResume(L, from, nargs, nresults);
 }
 
@@ -123,7 +149,7 @@ int lua_resume_worker_53_52(lua_State* L, lua_State* from, int nargs)
 	LPVOID lp;
 	LhBarrierGetCallback(&lp);
 	const auto luaResume = (_lua_resume_53_52)lp;
-	EmmyFacade::Get().Attach(L);
+	AttachFromHook(L);
 	return luaResume(L, from, nargs);
 }
 
@@ -132,7 +158,7 @@ int lua_resume_worker_51(lua_State* L, int nargs)
 	LPVOID lp;
 	LhBarrierGetCallback(&lp);
 	const auto luaResume = (_lua_resume_51)lp;
-	EmmyFacade::Get().Attach(L);
+	AttachFromHook(L);
 	return luaResume(L, nargs);
 }
 
@@ -280,6 +306,8 @@ HMODULE WINAPI LoadLibraryExW_intercept(LPCWSTR fileName, HANDLE hFile, DWORD dw
 	// in the case where Dll initialization acquires the loader lock and calls LoadLibrary
 	// while another thread is inside PostLoadLibrary.
 	HMODULE hModule = LoadLibraryExW_dll(fileName, hFile, dwFlags);
+	HookManager::CallbackScope callback(g_hookManager);
+	if (!callback) return hModule;
 
 	if (hModule != nullptr)
 	{
@@ -309,18 +337,25 @@ void HookLoadLibrary()
 
 void UninstallAllHooks()
 {
-	AcquireSRWLockExclusive(&g_srwHookList);
-	std::vector<HOOK_HANDLE> hooks;
-	hooks.swap(g_hookList);
-	ReleaseSRWLockExclusive(&g_srwHookList);
-
-	for (const auto hook : hooks) {
-		if (hook != nullptr) {
-			LhUninstallHook(hook);
-		}
+	// Disable the fast path before asking EasyHook to remove anything. This
+	// prevents a callback racing with module/transport destruction.
+	if (!g_hookManager.DisableAndQuiesce(std::chrono::milliseconds(5000))) {
+		EmmyFacade::Get().SendLog(LogType::Error,
+			"Emmy hook teardown timed out; retaining hook handles for retry");
+		return;
 	}
-	LhWaitForPendingRemovals();
-	for (const auto hook : hooks) delete hook;
+	if (!g_hookManager.UnhookIfSafe()) {
+		EmmyFacade::Get().SendLog(LogType::Warning,
+			"Emmy hook teardown could not release every hook; retry is possible");
+		return;
+	}
+	if (LhWaitForPendingRemovals() != 0) {
+		EmmyFacade::Get().SendLog(LogType::Warning,
+			"EasyHook retained an active trampoline; the Agent DLL remains loaded");
+	}
+	AcquireSRWLockExclusive(&g_srwPostLoadModule);
+	g_loadedModules.clear();
+	ReleaseSRWLockExclusive(&g_srwPostLoadModule);
 }
 
 void redirect(int port)
@@ -352,7 +387,7 @@ void redirect(int port)
 		return;
 	}
 
-	const auto stream = _open_osfhandle(reinterpret_cast<long>(writeStdPipe), 0);
+	const auto stream = _open_osfhandle(reinterpret_cast<intptr_t>(writeStdPipe), 0);
 	FILE* capture = nullptr;
 	if (stream == -1)
 	{
@@ -441,20 +476,27 @@ int StartupHookMode(void* lpParam)
 {
 	// 在这里初始化 EmmyFacade，而不是在 DllMain 中
 	// 因为 DllMain 在 loader lock 下执行，CRT 可能还没有完全初始化
-	EmmyFacade::Get().SetWorkMode(WorkMode::Attach);
-	EmmyFacade::Get().StartHook = FindAndHook;
-	EmmyFacade::Get().StopHook = UninstallAllHooks;
+	auto& facade = EmmyFacade::Get();
+	facade.SetWorkMode(WorkMode::Attach);
 	if (lpParam != nullptr) {
 		const auto* params = static_cast<const RemoteThreadParam*>(lpParam);
-		if (params->authToken[0] != '\0') {
-			EmmyFacade::Get().SetExpectedAuthToken(params->authToken);
-		}
+		facade.SetExpectedAuthToken(params->authToken);
+	} else {
+		facade.SetExpectedAuthToken(std::string());
 	}
 	
 	const int pid = (int)GetCurrentProcessId();
-	if (!EmmyFacade::Get().StartupHookMode(pid)) {
+	if (!facade.StartupHookMode(pid)) {
 		return 1;
 	}
+	if (!g_hookManager.IsEnabled() && g_hookManager.HookCount() != 0) {
+		facade.Destroy();
+		return 1;
+	}
+	// StartupHookMode may tear down a previous session;
+	// install the callbacks only after the new transport is listening.
+	facade.StartHook = FindAndHook;
+	facade.StopHook = UninstallAllHooks;
 
 	if (lpParam != nullptr && ((RemoteThreadParam*)lpParam)->bRedirect)
 	{
@@ -466,6 +508,9 @@ int StartupHookMode(void* lpParam)
 
 void FindAndHook()
 {
+	if (g_hookManager.IsEnabled()) return;
+	g_hookManager.Enable();
+	if (!g_hookManager.IsEnabled()) return;
 	// 重要：先处理现有模块，最后再安装钩子
 	// 如果先安装钩子，LoadSymbolsRecursively 中的操作（如 SendLog、peOpenFile）
 	// 可能触发新的 DLL 加载，导致 LoadLibraryExW_intercept 被调用，
@@ -473,7 +518,7 @@ void FindAndHook()
 	// （SRWLOCK 不支持递归锁定）
 
 	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
-	if (hSnapshot)
+	if (hSnapshot != INVALID_HANDLE_VALUE)
 	{
 		MODULEENTRY32 module;
 		module.dwSize = sizeof(MODULEENTRY32);

@@ -265,16 +265,19 @@ int EmmyTool::Attach() {
 	auto capture = _cmd.Get<bool>("capture-log");
 	bool alreadyAttached = false;
 	if (!InjectDll(pid, dir.c_str(), dll.c_str(), capture, authToken, &alreadyAttached)) {
-		printf("{\"schemaVersion\":1,\"status\":\"error\",\"pid\":%d,\"injected\":false,\"listening\":false,\"authReady\":false,\"rollbackRequired\":false,\"message\":\"inject_failed\"}\n", pid);
+		const bool injected = alreadyAttached || IsBeingInjected(pid, dll.c_str());
+		printf("{\"schemaVersion\":1,\"status\":\"error\",\"pid\":%d,\"injected\":%s,\"alreadyAttached\":%s,\"listening\":false,\"authReady\":false,\"rollbackRequired\":%s,\"message\":\"inject_or_reconfigure_failed\"}\n",
+			pid, injected ? "true" : "false", alreadyAttached ? "true" : "false",
+			injected ? "true" : "false");
 		return -1;
 	}
-	const bool authReady = !authToken.empty() && !alreadyAttached;
-	printf("{\"schemaVersion\":1,\"status\":\"%s\",\"pid\":%d,\"injected\":true,\"alreadyAttached\":%s,\"listening\":%s,\"authReady\":%s,\"rollbackRequired\":false}\n",
-		alreadyAttached ? "already-attached" : (authReady ? "auth-ready" : "listening"),
+	const bool authReady = !authToken.empty();
+	printf("{\"schemaVersion\":1,\"status\":\"%s\",\"pid\":%d,\"injected\":true,\"alreadyAttached\":%s,\"listening\":true,\"authReady\":%s,\"rollbackRequired\":false,\"reconfigured\":%s}\n",
+		authReady ? "auth-ready" : "listening",
 		pid,
 		alreadyAttached ? "true" : "false",
-		alreadyAttached ? "false" : "true",
-		authReady ? "true" : "false");
+		authReady ? "true" : "false",
+		alreadyAttached ? "true" : "false");
 
 	return 0;
 }

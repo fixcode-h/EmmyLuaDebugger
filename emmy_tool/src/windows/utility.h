@@ -39,6 +39,7 @@ int GetProcessByName(const char* name);
 void SetBreakpoint(HANDLE hProcess, LPVOID entryPoint, bool set, BYTE *data);
 
 bool InjectDllForProcess(HANDLE hProcess, const char *dllDir, const char *dllFileName);
+bool IsBeingInjected(DWORD processId, LPCSTR moduleFileName);
 
 bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture,
 	const std::string& authToken = std::string(), bool* alreadyAttached = nullptr);
