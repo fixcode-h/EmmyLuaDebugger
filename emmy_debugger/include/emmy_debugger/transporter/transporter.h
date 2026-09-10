@@ -92,6 +92,7 @@ public:
 	virtual ~Transporter();
 	virtual int Stop();
 	bool IsConnected() const;
+	bool IsStopRequested() const;
 	bool IsServerMode() const;
 	void SetMaxFrameSize(size_t size);
 	size_t GetMaxFrameSize() const;
@@ -104,9 +105,9 @@ protected:
 	virtual void Send(int cmd, const char* data, size_t len) = 0;
 	void SendActive(int cmd, const char* data, size_t len);
 	void SendActive(const char* data, size_t len);
-	void Send(uv_stream_t* handler, int cmd, const char* data, size_t len);
+	void Send(uv_stream_t* handler, uint64_t expectedGeneration, int cmd, const char* data, size_t len);
 	// send raw data
-	void Send(uv_stream_t* handler, const char* data, size_t len);
+	void Send(uv_stream_t* handler, uint64_t expectedGeneration, const char* data, size_t len);
 	void Receive(const char* data, size_t len);
 	bool ProcessBufferedData();
 	virtual void OnReceiveMessage(const nlohmann::json document);

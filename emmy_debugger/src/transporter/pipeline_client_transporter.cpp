@@ -92,7 +92,14 @@ bool PipelineClientTransporter::Connect(const std::string& name, std::string& er
 
 	SRWUniqueLock lock(mutex);
 	// 等待连接完成通知
-	EMMY_COND_WAIT(cv, lock, [this] { return connectionNotified; });
+	const bool notified = EMMY_COND_WAIT_FOR(cv, lock,
+		[this] { return connectionNotified || IsStopRequested(); },
+		std::chrono::seconds(5));
+	if (!notified) {
+		Stop();
+		err = "connection timed out";
+		return false;
+	}
 	return IsConnected();
 }
 

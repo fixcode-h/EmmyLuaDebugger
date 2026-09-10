@@ -16,6 +16,7 @@
 #pragma once
 
 #include <mutex>
+#include <chrono>
 
 #ifdef _WIN32
 // 避免 winsock.h 和 winsock2.h 冲突
@@ -78,6 +79,13 @@ inline void EmmyCondWait(CONDITION_VARIABLE& cv, SRWUniqueLock& lock, Predicate 
     }
 }
 
+template<typename Predicate>
+inline bool EmmyCondWaitFor(CONDITION_VARIABLE& cv, SRWUniqueLock& lock,
+                            Predicate pred, std::chrono::milliseconds timeout) {
+    return pred() || SleepConditionVariableSRW(&cv, lock.mutex(),
+        static_cast<DWORD>(timeout.count()), 0) != 0;
+}
+
 // 条件变量通知
 inline void EmmyCondNotifyAll(CONDITION_VARIABLE& cv) {
     WakeAllConditionVariable(&cv);
@@ -91,6 +99,7 @@ inline void EmmyCondNotifyOne(CONDITION_VARIABLE& cv) {
 #define EMMY_LOCK_GUARD(mtx) SRWLockGuard _lock_guard_##mtx(mtx)
 #define EMMY_UNIQUE_LOCK(mtx) SRWUniqueLock _unique_lock_##mtx(mtx)
 #define EMMY_COND_WAIT(cv, lock, pred) EmmyCondWait(cv, lock, pred)
+#define EMMY_COND_WAIT_FOR(cv, lock, pred, timeout) EmmyCondWaitFor(cv, lock, pred, timeout)
 #define EMMY_COND_NOTIFY_ALL(cv) EmmyCondNotifyAll(cv)
 #define EMMY_COND_NOTIFY_ONE(cv) EmmyCondNotifyOne(cv)
 
@@ -105,7 +114,13 @@ using EmmyCondVar = CONDITION_VARIABLE;
 
 template<typename Predicate>
 inline void EmmyCondWait(std::condition_variable& cv, std::unique_lock<std::mutex>& lock, Predicate pred) {
-    cv.wait(lock, pred);
+	cv.wait(lock, pred);
+}
+
+template<typename Predicate>
+inline bool EmmyCondWaitFor(std::condition_variable& cv, std::unique_lock<std::mutex>& lock,
+	Predicate pred, std::chrono::milliseconds timeout) {
+	return cv.wait_for(lock, timeout, pred);
 }
 
 inline void EmmyCondNotifyAll(std::condition_variable& cv) {
@@ -119,6 +134,7 @@ inline void EmmyCondNotifyOne(std::condition_variable& cv) {
 #define EMMY_LOCK_GUARD(mtx) std::lock_guard<std::mutex> _lock_guard_##mtx(mtx)
 #define EMMY_UNIQUE_LOCK(mtx) std::unique_lock<std::mutex> _unique_lock_##mtx(mtx)
 #define EMMY_COND_WAIT(cv, lock, pred) EmmyCondWait(cv, lock, pred)
+#define EMMY_COND_WAIT_FOR(cv, lock, pred, timeout) EmmyCondWaitFor(cv, lock, pred, timeout)
 #define EMMY_COND_NOTIFY_ALL(cv) EmmyCondNotifyAll(cv)
 #define EMMY_COND_NOTIFY_ONE(cv) EmmyCondNotifyOne(cv)
 

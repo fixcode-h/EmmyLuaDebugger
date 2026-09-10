@@ -96,7 +96,14 @@ bool SocketClientTransporter::Connect(const std::string& host, int port, std::st
 	}
 	StartEventLoop();
 	SRWUniqueLock lock(mutex);
-	EMMY_COND_WAIT(cv, lock, [this] { return connectionNotified; });
+	const bool notified = EMMY_COND_WAIT_FOR(cv, lock,
+		[this] { return connectionNotified || IsStopRequested(); },
+		std::chrono::seconds(5));
+	if (!notified) {
+		Stop();
+		err = "connection timed out";
+		return false;
+	}
 	if (this->connectionStatus < 0) {
 		err = uv_strerror(this->connectionStatus);
 	}
