@@ -63,6 +63,26 @@ void Capture(lua_State* state, lua_Debug* ar) {
 	Require(debugger->Eval(eval, true) && eval->result->value == "23", "global fallback uses the frame's custom environment");
 	eval->expr = "string";
 	Require(!debugger->Eval(eval, true) && eval->error == "VALUE_NOT_FOUND", "custom _ENV never leaks unrelated _G values");
+	if (luaVersion != LuaVersion::LUA_51 && luaVersion != LuaVersion::LUA_JIT) {
+		lua_Debug frame{};
+		Require(lua_getstack(state, 0, &frame) != 0, "paused frame exists");
+		bool checkedEnvironment = false;
+		for (int i = 1;; ++i) {
+			const char* name = lua_getlocal(state, &frame, i);
+			if (!name) break;
+			if (std::strcmp(name, "_ENV") == 0) {
+				lua_pushnil(state);
+				lua_setlocal(state, &frame, i);
+				Require(!debugger->Eval(eval, true) && eval->error == "VALUE_NOT_FOUND",
+					"nil _ENV does not fall back to default globals");
+				lua_pushvalue(state, -1);
+				lua_setlocal(state, &frame, i);
+				checkedEnvironment = true;
+			}
+			lua_pop(state, 1);
+		}
+		Require(checkedEnvironment && lua_gettop(state) == top, "environment restored after nil environment check");
+	}
 	eval->expr = "shadow";
 	Require(debugger->Eval(eval, true) && eval->result->value == "7", "inner local shadows outer local");
 	eval->expr = "value";

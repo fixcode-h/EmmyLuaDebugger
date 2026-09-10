@@ -1797,7 +1797,7 @@ bool Debugger::DoRestrictedEval(std::shared_ptr<EvalContext> evalContext) {
 			found = true;
 			continue; // keep searching for an inner local with the same name
 		}
-		if (!functionEnvironment && !found && std::strcmp(name, "_ENV") == 0 && lua_istable(L, -1)) {
+		if (!functionEnvironment && !found && std::strcmp(name, "_ENV") == 0) {
 			if (localEnvironmentIndex != 0) {
 				lua_insert(L, localEnvironmentIndex);
 				lua_remove(L, localEnvironmentIndex + 1);
@@ -1822,7 +1822,7 @@ bool Debugger::DoRestrictedEval(std::shared_ptr<EvalContext> evalContext) {
 				found = true;
 				break;
 			}
-			if (!functionEnvironment && environmentIndex == 0 && std::strcmp(name, "_ENV") == 0 && lua_istable(L, -1)) {
+			if (!functionEnvironment && environmentIndex == 0 && std::strcmp(name, "_ENV") == 0) {
 				environmentIndex = lua_gettop(L);
 				continue;
 			}
@@ -1839,6 +1839,8 @@ bool Debugger::DoRestrictedEval(std::shared_ptr<EvalContext> evalContext) {
 #endif
 		}
 		if (!found && environmentIndex != 0) {
+			// nil/非表 _ENV 也必须遮蔽默认全局环境，不能回退泄露错误作用域的值。
+			if (!lua_istable(L, environmentIndex)) return fail("VALUE_NOT_FOUND");
 			lua_pushstring(L, root.c_str());
 			lua_rawget(L, environmentIndex);
 			lua_insert(L, functionIndex);
