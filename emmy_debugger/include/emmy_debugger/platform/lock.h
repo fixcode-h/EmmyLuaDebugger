@@ -82,8 +82,19 @@ inline void EmmyCondWait(CONDITION_VARIABLE& cv, SRWUniqueLock& lock, Predicate 
 template<typename Predicate>
 inline bool EmmyCondWaitFor(CONDITION_VARIABLE& cv, SRWUniqueLock& lock,
                             Predicate pred, std::chrono::milliseconds timeout) {
-    return pred() || SleepConditionVariableSRW(&cv, lock.mutex(),
-        static_cast<DWORD>(timeout.count()), 0) != 0;
+    if (pred()) return true;
+    const ULONGLONG deadline = GetTickCount64() +
+        static_cast<ULONGLONG>(timeout.count() < 0 ? 0 : timeout.count());
+    while (!pred()) {
+        const ULONGLONG now = GetTickCount64();
+        if (now >= deadline) return pred();
+        const ULONGLONG remaining = deadline - now;
+        const DWORD waitMs = remaining > MAXDWORD ? MAXDWORD : static_cast<DWORD>(remaining);
+        if (!SleepConditionVariableSRW(&cv, lock.mutex(), waitMs, 0)) {
+            if (GetLastError() == ERROR_TIMEOUT) return pred();
+        }
+    }
+    return true;
 }
 
 // 条件变量通知
