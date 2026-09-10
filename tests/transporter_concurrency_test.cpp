@@ -78,6 +78,8 @@ int main(int argc, char** argv) {
 			std::cerr << "pipe client connect error: " << error << std::endl;
 			std::exit(1);
 		}
+		client.Send(18, "{}", 2);
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		std::atomic<bool> stopSenders(false);
 		std::vector<std::thread> senders;
 		for (int i = 0; i < 8; ++i) senders.emplace_back([&client, &stopSenders] {

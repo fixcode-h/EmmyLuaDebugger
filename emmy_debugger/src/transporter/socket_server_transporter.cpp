@@ -49,6 +49,7 @@ SocketServerTransporter::~SocketServerTransporter() {
 }
 
 bool SocketServerTransporter::Listen(const std::string& host, int port, std::string& err) {
+	if (loop == nullptr) { err = "failed to initialize event loop"; return false; }
 	uvServer.data = this;
 	if (serverInitialized) {
 		err = "socket server is already listening";

@@ -47,6 +47,7 @@ PipelineServerTransporter::~PipelineServerTransporter() {
 }
 
 bool PipelineServerTransporter::pipe(const std::string& name, std::string& err) {
+	if (loop == nullptr) { err = "failed to initialize event loop"; return false; }
 	std::string fullName;
 #ifdef _WIN32
 	{

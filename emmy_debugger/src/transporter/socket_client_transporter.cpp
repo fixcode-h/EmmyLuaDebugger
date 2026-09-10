@@ -70,6 +70,7 @@ void SocketClientTransporter::OnDisconnect() {
 }
 
 bool SocketClientTransporter::Connect(const std::string& host, int port, std::string& err) {
+	if (loop == nullptr) { err = "failed to initialize event loop"; return false; }
 	if (clientInitialized) {
 		err = "socket client is already connected or closing";
 		return false;
@@ -103,7 +104,6 @@ bool SocketClientTransporter::Connect(const std::string& host, int port, std::st
 }
 
 void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
-	this->connectionStatus = status;
 	if (status >= 0) {
 		SetActiveHandler((uv_stream_t*)&uvClient);
 		OnConnect(true);
@@ -116,6 +116,8 @@ void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
 		Stop();
 		OnConnect(false);
 	}
+	SRWUniqueLock lock(mutex);
+	this->connectionStatus = status;
 	connectionNotified = true;
 	EMMY_COND_NOTIFY_ALL(cv);
 }

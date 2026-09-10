@@ -62,6 +62,7 @@ void PipelineClientTransporter::OnDisconnect() {
 }
 
 bool PipelineClientTransporter::Connect(const std::string& name, std::string& err) {
+	if (loop == nullptr) { err = "failed to initialize event loop"; return false; }
 	if (clientInitialized) { err = "pipe client is already connected or closing"; return false; }
 	connectionNotified = false;
 	std::string fullName;
@@ -109,6 +110,7 @@ void PipelineClientTransporter::OnPipeConnection(uv_connect_t* pipe, int status)
 		OnConnect(true);
 		uv_read_start((uv_stream_t*)&uvClient, echo_alloc, after_read);
 	}
+	SRWUniqueLock lock(mutex);
 	connectionNotified = true;
 	EMMY_COND_NOTIFY_ALL(cv);
 	free(pipe);
