@@ -1,6 +1,7 @@
 #include "emmy_debugger/debugger/hook_dispatcher.h"
 
 #include <unordered_map>
+#include <mutex>
 
 namespace {
 struct HookEntry {
@@ -13,17 +14,19 @@ struct HookEntry {
 };
 
 std::unordered_map<lua_State*, HookEntry> gHooks;
+std::mutex gHooksMutex;
 
 int EventMask(const lua_Debug* ar) {
 	if (ar == nullptr) return 0;
 		switch (getDebugEvent(const_cast<lua_Debug*>(ar))) {
 		case LUA_HOOKCALL: return LUA_MASKCALL;
 		case LUA_HOOKRET:
+			return LUA_MASKRET;
 		#ifdef LUA_HOOKTAILRET
 		case LUA_HOOKTAILRET: return LUA_MASKRET;
 		#endif
 		#ifdef LUA_HOOKTAILCALL
-		case LUA_HOOKTAILCALL: return LUA_MASKRET;
+		case LUA_HOOKTAILCALL: return LUA_MASKCALL;
 		#endif
 		case LUA_HOOKLINE: return LUA_MASKLINE;
 		case LUA_HOOKCOUNT: return LUA_MASKCOUNT;
@@ -32,9 +35,13 @@ int EventMask(const lua_Debug* ar) {
 }
 
 void Dispatch(lua_State* L, lua_Debug* ar) {
-	auto it = gHooks.find(L);
-	if (it == gHooks.end()) return;
-	const HookEntry entry = it->second;
+	HookEntry entry;
+	{
+		std::lock_guard<std::mutex> lock(gHooksMutex);
+		auto it = gHooks.find(L);
+		if (it == gHooks.end()) return;
+		entry = it->second;
+	}
 	const int eventMask = EventMask(ar);
 	if (entry.hostHook != nullptr && (entry.hostMask & eventMask) != 0 &&
 		entry.hostHook != Dispatch) {
@@ -51,13 +58,33 @@ bool SetDebuggerHook(lua_State* L, lua_Hook debuggerHook, int debuggerMask,
 	int debuggerCount) {
 	if (L == nullptr || debuggerHook == nullptr || debuggerMask == 0) return false;
 	HookEntry entry;
-	entry.hostHook = lua_gethook(L);
-	entry.hostMask = lua_gethookmask(L);
-	entry.hostCount = lua_gethookcount(L);
+	const lua_Hook currentHook = lua_gethook(L);
+	const int currentMask = lua_gethookmask(L);
+	const int currentCount = lua_gethookcount(L);
+	{
+		std::lock_guard<std::mutex> lock(gHooksMutex);
+		auto existing = gHooks.find(L);
+		if (existing != gHooks.end()) {
+			entry = existing->second;
+			if (currentHook != Dispatch) {
+				entry.hostHook = currentHook;
+				entry.hostMask = currentMask;
+				entry.hostCount = currentCount;
+			}
+		}
+	}
+	if (entry.hostHook == nullptr && currentHook != Dispatch) {
+		entry.hostHook = currentHook;
+		entry.hostMask = currentMask;
+		entry.hostCount = currentCount;
+	}
 	entry.debuggerHook = debuggerHook;
 	entry.debuggerMask = debuggerMask;
 	entry.debuggerCount = debuggerCount;
-	gHooks[L] = entry;
+	{
+		std::lock_guard<std::mutex> lock(gHooksMutex);
+		gHooks[L] = entry;
+	}
 	// Lua has one count interval for a state. Preserve the host interval when
 	// present; debugger hooks normally use event masks and count == 0.
 	int count = entry.hostCount > 0 ? entry.hostCount : debuggerCount;
@@ -67,10 +94,16 @@ bool SetDebuggerHook(lua_State* L, lua_Hook debuggerHook, int debuggerMask,
 
 bool ClearDebuggerHook(lua_State* L) {
 	if (L == nullptr) return false;
-	auto it = gHooks.find(L);
-	if (it == gHooks.end()) return false;
-	const HookEntry entry = it->second;
-	lua_sethook(L, entry.hostHook, entry.hostMask, entry.hostCount);
-	gHooks.erase(it);
+	HookEntry entry;
+	{
+		std::lock_guard<std::mutex> lock(gHooksMutex);
+		auto it = gHooks.find(L);
+		if (it == gHooks.end()) return false;
+		entry = it->second;
+		gHooks.erase(it);
+	}
+	if (lua_gethook(L) == Dispatch) {
+		lua_sethook(L, entry.hostHook, entry.hostMask, entry.hostCount);
+	}
 	return true;
 }
