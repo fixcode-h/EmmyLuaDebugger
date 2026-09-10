@@ -28,6 +28,9 @@ int main() {
 		generic.layoutHash.empty(), "generic descriptor does not claim 5.4.3");
 	Require(ValidateLuaAbiDescriptor(generic, unlua, error) &&
 		error.empty(), "generic public descriptor remains usable without private access");
+	const LuaAbiDescriptor detected = DetectLuaAbiDescriptor();
+	Require(!detected.privateLayoutSupported && detected.layoutHash.empty() &&
+		detected.release != "5.4.3", "unknown detection cannot masquerade as UnLua 5.4.3");
 
 	LuaAbiDescriptor altered = unlua;
 	altered.luaStateSize++;
