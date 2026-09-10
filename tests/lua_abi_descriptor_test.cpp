@@ -15,7 +15,7 @@ void Require(bool condition, const char* message) {
 int main() {
 	const LuaAbiDescriptor unlua = MakeUnLua54_3AbiDescriptor();
 	std::string error;
-	Require(unlua.luaIdSize == 60 && unlua.luaStateSize == 208 &&
+	Require(unlua.luaIdSize == 256 && unlua.luaStateSize == 208 &&
 		unlua.globalStateOffset == 24 && unlua.callInfoOffset == 32,
 		"fixture records the measured UnLua x64 layout");
 	Require(ValidateLuaAbiDescriptor(unlua, unlua, error),

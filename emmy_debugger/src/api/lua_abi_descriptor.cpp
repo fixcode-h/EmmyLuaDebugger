@@ -76,10 +76,12 @@ LuaAbiDescriptor MakeUnLua54_3AbiDescriptor() {
 	descriptor.major = 5;
 	descriptor.minor = 4;
 	descriptor.release = "5.4.3";
-	// Measured from UnLua's bundled lua-5.4.3 headers with the x64 ABI:
-	// sizeof(lua_State)=208, l_G=24, ci=32, sphook=168, LUA_IDSIZE=60.
-	descriptor.layoutHash = "lua-5.4.3-x64-state208-lg24-ci32-sphook168";
-	descriptor.luaIdSize = 60;
+	// Measured from UnLua's bundled lua-5.4.3 headers with the x64 ABI and
+	// UnLua's CMake LUA_IDSIZE=256 definition: sizeof(lua_State)=208,
+	// l_G=24, ci=32, sphook=168. The stock header default is 60 and is not a
+	// runtime fingerprint.
+	descriptor.layoutHash = "lua-5.4.3-x64-state208-lg24-ci32-sphook168-idsize256";
+	descriptor.luaIdSize = 256;
 	// x64 UnLua 5.4.3 (the SP-hook fork) layout contract. Version strings
 	// alone are not sufficient to authorize private-structure access.
 	descriptor.luaStateSize = 208;
