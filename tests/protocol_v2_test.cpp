@@ -4,6 +4,7 @@
 #include "emmy_debugger/transporter/transport_auth.h"
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -18,6 +19,28 @@ void Require(bool condition, const char* message) {
 } // namespace
 
 int main() {
+	std::ifstream fixtures("tests/protocol_fuzz_cases.jsonl");
+	Require(fixtures.good(), "malformed protocol fixture must exist");
+	std::string fixtureLine;
+	unsigned fixtureCount = 0;
+	while (std::getline(fixtures, fixtureLine)) {
+		const auto fixture = nlohmann::json::parse(fixtureLine);
+		const auto stage = fixture.at("stage").get<std::string>();
+		if (stage == "frame") continue; // Executed by transporter_frame_test.
+		std::string error;
+		bool accepted = true;
+		if (stage == "identity") {
+			accepted = ValidateV2RequestIdentity(fixture.at("input"), "fixture-agent", 2, error);
+		} else {
+			Require(stage == "target", "unknown fixture stage must fail the suite");
+			V2DebugTarget target;
+			accepted = ParseV2DebugTarget(fixture.at("input"), true, target, error);
+		}
+		Require(!accepted && error == fixture.at("expected").get<std::string>(),
+			fixture.at("name").get<std::string>().c_str());
+		++fixtureCount;
+	}
+	Require(fixtureCount >= 9, "identity/target fixtures are not silently skipped");
 	Require(static_cast<int>(MessageCMD::Unknown) == 0, "Unknown wire id");
 	Require(static_cast<int>(MessageCMD::InitReq) == 1, "InitReq wire id");
 	Require(static_cast<int>(MessageCMD::ReadyRsp) == 4, "ReadyRsp wire id");

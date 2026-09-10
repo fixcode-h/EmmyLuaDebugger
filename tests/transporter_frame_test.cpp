@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -52,6 +53,23 @@ void Require(bool condition, const char* message) {
 } // namespace
 
 int main() {
+	std::ifstream fixtures("tests/protocol_fuzz_cases.jsonl");
+	Require(fixtures.good(), "malformed protocol fixture must exist");
+	std::string fixtureLine;
+	unsigned fixtureCount = 0;
+	while (std::getline(fixtures, fixtureLine)) {
+		const auto fixture = nlohmann::json::parse(fixtureLine);
+		if (fixture.at("stage") != "frame") continue;
+		TestTransporter transport;
+		transport.SetMaxFrameSize(fixture.value("maxFrameSize", 64));
+		const auto input = fixture.at("input").get<std::string>();
+		transport.Receive(input.data(), input.size());
+		Require(transport.protocolErrors == 1 && transport.disconnects == 1 &&
+			transport.lastProtocolError == fixture.at("expected").get<std::string>(),
+			fixture.at("name").get<std::string>().c_str());
+		++fixtureCount;
+	}
+	Require(fixtureCount >= 3, "framing fixtures are not silently skipped");
 	TestTransporter readBuffer;
 	uv_buf_t allocated = uv_buf_init(static_cast<char*>(malloc(3)), 3);
 	memcpy(allocated.base, "13\n", 3);

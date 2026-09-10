@@ -3,6 +3,52 @@ name: Emmy Debugger Core
 on: [push]
 
 jobs:
+  validate:
+    name: Test ${{ matrix.os }} ${{ matrix.arch }} ${{ matrix.config }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x64, config: Debug }
+          - { os: windows-latest, arch: x64, config: Release }
+          - { os: windows-latest, arch: x86, config: Debug }
+          - { os: windows-latest, arch: x86, config: Release }
+          - { os: ubuntu-latest, arch: x64, config: Debug }
+          - { os: ubuntu-latest, arch: x64, config: Release }
+          - { os: macos-latest, arch: arm64, config: Debug }
+          - { os: macos-latest, arch: arm64, config: Release }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Build dynamic Lua API and native contracts
+        shell: bash
+        run: |
+          cmake -S . -B build-validation -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DEMMY_VM_REGISTRY_TEST=ON -DEMMY_USE_LUA_SOURCE=OFF -DEMMY_LUA_VERSION=54
+          cmake --build build-validation --parallel 4
+          ctest --test-dir build-validation --output-on-failure --no-tests=error --timeout 45 --output-junit native-results.xml
+      - name: Build and run real Lua lifecycle and protocol harnesses
+        shell: bash
+        run: |
+          cmake -S . -B build-runtime -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DEMMY_VM_REGISTRY_TEST=ON -DEMMY_USE_LUA_SOURCE=ON -DEMMY_LUA_VERSION=54
+          cmake --build build-runtime --target emmy_vm_lifecycle_harness emmy_hook_dispatcher_test emmy_native_socket_harness --parallel 4
+          ctest --test-dir build-runtime -R 'emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_socket_harness|emmy_native_pipe_harness' --output-on-failure --no-tests=error --timeout 45 --output-junit runtime-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-tests-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.config }}
+          if-no-files-found: error
+          path: |
+            build-validation/native-results.xml
+            build-validation/Testing/Temporary/LastTest.log
+            build-runtime/runtime-results.xml
+            build-runtime/Testing/Temporary/LastTest.log
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -79,7 +125,7 @@ jobs:
   upload-release:
     name: Upload Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build]
+    needs: [build, validate]
     runs-on: [ubuntu-latest]
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
