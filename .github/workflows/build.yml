@@ -35,9 +35,26 @@ jobs:
       - name: Build and run real Lua lifecycle and protocol harnesses
         shell: bash
         run: |
-          cmake -S . -B build-runtime -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }} -DEMMY_VM_REGISTRY_TEST=ON -DEMMY_USE_LUA_SOURCE=ON -DEMMY_LUA_VERSION=54
-          cmake --build build-runtime --target emmy_vm_lifecycle_harness emmy_hook_dispatcher_test emmy_native_socket_harness --parallel 4
-          ctest --test-dir build-runtime -R 'emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_socket_harness|emmy_native_pipe_harness' --output-on-failure --no-tests=error --timeout 45 --output-junit runtime-results.xml
+          for lua_version in 51 52 53 54; do
+            build_dir="build-runtime-${lua_version}"
+            cmake -S . -B "${build_dir}" -G Ninja \
+              -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+              -DEMMY_VM_REGISTRY_TEST=ON \
+              -DEMMY_USE_LUA_SOURCE=ON \
+              -DEMMY_LUA_VERSION=${lua_version}
+            cmake --build "${build_dir}" --target \
+              emmy_vm_lifecycle_harness emmy_hook_dispatcher_test emmy_native_socket_harness \
+              --parallel 4
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              harness_regex='emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_pipe_harness'
+            else
+              harness_regex='emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_socket_harness'
+            fi
+            ctest --test-dir "${build_dir}" -R "${harness_regex}" \
+              --output-on-failure --no-tests=error --timeout 45 \
+              --output-junit "runtime-results.xml"
+            mv "${build_dir}/runtime-results.xml" "${build_dir}/runtime-results-${lua_version}.xml"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -46,8 +63,8 @@ jobs:
           path: |
             build-validation/native-results.xml
             build-validation/Testing/Temporary/LastTest.log
-            build-runtime/runtime-results.xml
-            build-runtime/Testing/Temporary/LastTest.log
+            build-runtime-*/runtime-results-*.xml
+            build-runtime-*/Testing/Temporary/LastTest.log
 
   build:
     runs-on: ${{ matrix.os }}
