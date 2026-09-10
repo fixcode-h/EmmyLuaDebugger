@@ -19,6 +19,8 @@
 #include <cstddef>
 #include <string>
 #include <thread>
+#include <deque>
+#include <mutex>
 #include "uv.h"
 #include "nlohmann/json_fwd.hpp"
 
@@ -66,12 +68,17 @@ class Transporter {
 	size_t bufSize;
 	size_t receiveSize;
 	bool readHead;
-	bool running;
+	std::atomic<bool> running;
 	std::atomic<bool> connected;
 	bool serverMode;
 	size_t maxFrameSize;
 	std::atomic<bool> disconnectNotified;
 	std::atomic<bool> protocolFailed;
+	struct PendingWrite { uv_stream_t* handler; char* data; size_t len; };
+	std::mutex sendMutex;
+	std::deque<PendingWrite> sendQueue;
+	uv_async_t sendAsync;
+	std::atomic<bool> asyncInitialized;
 protected:
 	uv_loop_t* loop;
 public:
@@ -98,6 +105,8 @@ protected:
 	void StartEventLoop();
 	void JoinEventLoop();
 	void Run();
+	void DrainSendQueue();
+	static void OnSendAsync(uv_async_t* handle);
 	virtual void OnDisconnect();
 	virtual void OnConnect(bool suc);
     // helper for both client and server

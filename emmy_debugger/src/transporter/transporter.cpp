@@ -33,6 +33,7 @@ Transporter::Transporter(bool server):
 	protocolFailed(false)
 {
 	loop = uv_loop_new();
+	asyncInitialized.store(false);
 	bufSize = 10 * 1024;
 	buf = static_cast<char*>(malloc(bufSize));
 }
@@ -44,6 +45,12 @@ Transporter::~Transporter()
 	if (buf)
 	{
 		free(buf);
+	}
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		for (std::deque<PendingWrite>::iterator it = sendQueue.begin(); it != sendQueue.end(); ++it)
+			free(it->data);
+		sendQueue.clear();
 	}
 	if (loop != nullptr) {
 		uv_loop_close(loop);
@@ -269,43 +276,13 @@ bool Transporter::IsServerMode() const
 ////////////////////////////////////////////////////////////////////////////////
 // send data
 
-typedef struct
-{
-	uv_write_t req;
-	uv_buf_t buf;
-	uv_stream_t* handler;
-} write_req_t;
+typedef struct { uv_write_t req; uv_buf_t buf; } write_req_t;
 
 static void after_write(uv_write_t* req, int status)
 {
 	const auto* writeReq = reinterpret_cast<write_req_t*>(req);
 	free(writeReq->buf.base);
 	delete writeReq;
-}
-
-static void after_async(uv_handle_t* h)
-{
-	delete h;
-}
-
-static void async_write(uv_async_t* h)
-{
-	auto* writeReq = (write_req_t*)h->data;
-	if (writeReq == nullptr || writeReq->handler == nullptr ||
-		uv_is_closing(reinterpret_cast<uv_handle_t*>(writeReq->handler))) {
-		if (writeReq != nullptr) {
-			free(writeReq->buf.base);
-			delete writeReq;
-		}
-		uv_close((uv_handle_t*)h, after_async);
-		return;
-	}
-	const int status = uv_write(&writeReq->req, writeReq->handler, &writeReq->buf, 1, after_write);
-	if (status < 0) {
-		free(writeReq->buf.base);
-		delete writeReq;
-	}
-	uv_close((uv_handle_t*)h, after_async);
 }
 
 void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t len)
@@ -318,7 +295,6 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 	{
 		return;
 	}
-	auto* writeReq = new write_req_t();
 	char cmdValue[100];
 	const int l1 = sprintf(cmdValue, "%d\n", cmd);
 	const size_t newLen = len + l1 + 1;
@@ -329,24 +305,11 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 	// line2
 	memcpy(newData + l1, data, len);
 	newData[newLen - 1] = '\n';
-	writeReq->buf = uv_buf_init(newData, newLen);
-	writeReq->handler = handler;
-
-	// thread safe:
-	auto* async = new uv_async_t;
-	async->data = writeReq;
-	const int initStatus = uv_async_init(loop, async, async_write);
-	if (initStatus < 0) {
-		free(writeReq->buf.base);
-		delete writeReq;
-		delete async;
-		return;
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		sendQueue.push_back(PendingWrite{handler, newData, newLen});
 	}
-	if (uv_async_send(async) < 0) {
-		free(writeReq->buf.base);
-		delete writeReq;
-		if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(async))) uv_close(reinterpret_cast<uv_handle_t*>(async), after_async);
-	}
+	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 }
 
 void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
@@ -359,29 +322,15 @@ void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
 	{
 		return;
 	}
-	auto* writeReq = new write_req_t();
 	char* newData = static_cast<char*>(malloc(len));
 	if (newData == nullptr) return;
 
 	memcpy(newData, data, len);
-	writeReq->buf = uv_buf_init(newData, len);
-	writeReq->handler = handler;
-
-	// thread safe:
-	auto* async = new uv_async_t;
-	async->data = writeReq;
-	const int initStatus = uv_async_init(loop, async, async_write);
-	if (initStatus < 0) {
-		free(writeReq->buf.base);
-		delete writeReq;
-		delete async;
-		return;
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		sendQueue.push_back(PendingWrite{handler, newData, len});
 	}
-	if (uv_async_send(async) < 0) {
-		free(writeReq->buf.base);
-		delete writeReq;
-		if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(async))) uv_close(reinterpret_cast<uv_handle_t*>(async), after_async);
-	}
+	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 }
 
 void Transporter::StartEventLoop()
@@ -398,18 +347,53 @@ void Transporter::JoinEventLoop()
 
 void Transporter::Run()
 {
-	running = true;
-	while (running)
-	{
-		uv_run(loop, UV_RUN_NOWAIT);
-		std::this_thread::sleep_for(std::chrono::milliseconds(20));
-	}
+	running.store(true, std::memory_order_release);
+	if (uv_async_init(loop, &sendAsync, OnSendAsync) != 0) return;
+	sendAsync.data = this;
+	asyncInitialized.store(true, std::memory_order_release);
+	while (running.load(std::memory_order_acquire) || uv_loop_alive(loop))
+		uv_run(loop, UV_RUN_DEFAULT);
+	DrainSendQueue();
+	asyncInitialized.store(false, std::memory_order_release);
+	if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(&sendAsync)))
+		uv_close(reinterpret_cast<uv_handle_t*>(&sendAsync), nullptr);
+	uv_run(loop, UV_RUN_DEFAULT);
 }
 
 int Transporter::Stop()
 {
-	running = false;
+	running.store(false, std::memory_order_release);
+	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 	return 0;
+}
+
+void Transporter::OnSendAsync(uv_async_t* handle) {
+	if (handle == nullptr || handle->data == nullptr) return;
+	Transporter* transporter = static_cast<Transporter*>(handle->data);
+	transporter->DrainSendQueue();
+	if (!transporter->running.load(std::memory_order_acquire) &&
+		!uv_is_closing(reinterpret_cast<uv_handle_t*>(handle)))
+		uv_close(reinterpret_cast<uv_handle_t*>(handle), nullptr);
+}
+
+void Transporter::DrainSendQueue() {
+	std::deque<PendingWrite> pending;
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		pending.swap(sendQueue);
+	}
+	for (std::deque<PendingWrite>::iterator it = pending.begin(); it != pending.end(); ++it) {
+		if (it->handler == nullptr || uv_is_closing(reinterpret_cast<uv_handle_t*>(it->handler))) {
+			free(it->data);
+			continue;
+		}
+		write_req_t* request = new write_req_t();
+		request->buf = uv_buf_init(it->data, static_cast<unsigned int>(it->len));
+		if (uv_write(&request->req, it->handler, &request->buf, 1, after_write) < 0) {
+			free(it->data);
+			delete request;
+		}
+	}
 }
 
 bool Transporter::ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err) 
