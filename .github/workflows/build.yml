@@ -46,14 +46,26 @@ jobs:
               emmy_vm_lifecycle_harness emmy_hook_dispatcher_test emmy_native_socket_harness \
               --parallel 4
             if [[ "${{ runner.os }}" == "Windows" ]]; then
-              harness_regex='emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_pipe_harness'
+              harness_regex='emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_socket_harness|emmy_native_pipe_harness'
             else
               harness_regex='emmy_vm_lifecycle_harness|emmy_hook_dispatcher_test|emmy_native_socket_harness'
             fi
             ctest --test-dir "${build_dir}" -R "${harness_regex}" \
               --output-on-failure --no-tests=error --timeout 45 \
-              --output-junit "runtime-results.xml"
-            mv "${build_dir}/runtime-results.xml" "${build_dir}/runtime-results-${lua_version}.xml"
+              --output-junit "runtime-results-${lua_version}.xml"
+          done
+      - name: Verify real Windows Lua DLL loading
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          for pair in '51 lua-5.1.5' '54 lua-5.4.6'; do
+            read -r lua_version lua_dir <<< "$pair"
+            build_dir="build-shared-${lua_version}"
+            cmake -S . -B "$build_dir" -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
+              -DEMMY_USE_LUA_SOURCE=ON -DLUA_BUILD_AS_DLL=ON -DEMMY_LUA_VERSION="$lua_version"
+            cmake --build "$build_dir" --target "lua${lua_version}" --parallel 4
+            build-validation/emmy_debugger/emmy_dynamic_lua_loader_test.exe \
+              "$PWD/$build_dir/third-party/$lua_dir/lua${lua_version}.dll" "$lua_version"
           done
       - uses: actions/upload-artifact@v4
         if: always()

@@ -134,6 +134,10 @@ target_link_libraries(
 )
 
 if(EMMY_VM_REGISTRY_TEST)
+    if(WIN32 AND NOT EMMY_USE_LUA_SOURCE)
+        add_executable(emmy_dynamic_lua_loader_test ${emmy_SOURCE_DIR}/tests/dynamic_lua_loader_test.cpp)
+        target_link_libraries(emmy_dynamic_lua_loader_test PRIVATE emmy_debugger)
+    endif()
     add_executable(emmy_source_registry_test ${emmy_SOURCE_DIR}/tests/source_registry_test.cpp src/vm/source_registry.cpp)
     target_include_directories(emmy_source_registry_test PRIVATE ${emmy_debugger_SOURCE_DIR}/include)
     add_test(NAME emmy_source_registry_test COMMAND emmy_source_registry_test)
