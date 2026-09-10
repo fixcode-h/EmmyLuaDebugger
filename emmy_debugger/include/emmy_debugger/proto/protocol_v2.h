@@ -14,6 +14,31 @@ std::string VmLifecycleStateName(VmLifecycleState state);
 std::string VmProtocolId(uint64_t registrationId);
 uint64_t ParseVmProtocolId(const nlohmann::json& value);
 
+struct V2DebugTarget {
+	uint64_t vmId = 0;
+	uint64_t pauseId = 0;
+	uint64_t contextGeneration = 0;
+	uint64_t sourceEpoch = 0;
+	std::string threadId;
+	std::string frameId;
+};
+
+// Optional generation fields are accepted only when they are positive integers.
+// Malformed identity must never silently downgrade to legacy routing.
+bool ParseV2DebugTarget(const nlohmann::json& document, bool evaluation,
+	V2DebugTarget& target, std::string& errorCode);
+
+// Validates the identity envelope before routing a v2 request. Keeping this
+// pure makes the admission contract testable without a live transport.
+bool ValidateV2RequestIdentity(const nlohmann::json& document,
+							   const std::string& expectedAgentSessionId,
+							   uint64_t currentConnectionEpoch,
+							   std::string& errorCode);
+
+// Stable key ordering prevents semantically identical JSON requests from
+// producing different idempotency hashes.
+std::string CanonicalV2Json(const nlohmann::json& document);
+
 nlohmann::json MakeV2Envelope(const std::string& kind,
 							 const std::string& type,
 							 const std::string& agentSessionId,

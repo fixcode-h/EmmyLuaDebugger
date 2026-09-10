@@ -1,6 +1,7 @@
 #include "emmy_debugger/proto/proto_handler.h"
 
 #include "emmy_debugger/emmy_facade.h"
+#include "emmy_debugger/debugger/emmy_debugger.h"
 #include "emmy_debugger/transporter/transporter.h"
 #include "nlohmann/json.hpp"
 
@@ -78,23 +79,28 @@ void ProtoHandler::OnAddBreakPointReq(AddBreakpointParams &params) {
 	if (params.clear) {
 		manager.RemoveAllBreakpoints();
 	}
-
-	for (auto &bp: params.breakPoints) {
-		manager.AddBreakpoint(bp);
+	if (params.replaceComposite) {
+		manager.ReplaceBreakpoints(params.breakPoints);
+	} else {
+		for (auto &bp: params.breakPoints) {
+			manager.AddBreakpoint(bp);
+		}
 	}
 }
 
 void ProtoHandler::OnRemoveBreakPointReq(RemoveBreakpointParams &params) {
 	auto &manager = _owner->GetDebugManager();
 	for (auto bp: params.breakPoints) {
-		manager.RemoveBreakpoint(bp->file, bp->line);
+		if (bp) {
+			manager.RemoveBreakpoint(bp->file, bp->line, bp->owner, bp->breakpointId, bp->vmId);
+		}
 	}
 }
 
 void ProtoHandler::OnActionReq(ActionParams &params) {
 	auto &manager = _owner->GetDebugManager();
 	if (params.vmId != 0) {
-		manager.DoActionForVm(params.vmId, params.action, params.pauseId);
+		manager.RouteAction(params.vmId, params.action, params.pauseId, params.threadId);
 	} else {
 		manager.DoAction(params.action);
 	}
@@ -103,8 +109,18 @@ void ProtoHandler::OnActionReq(ActionParams &params) {
 void ProtoHandler::OnEvalReq(EvalParams &params) {
 	auto &manager = _owner->GetDebugManager();
 	if (params.ctx && params.ctx->vmId != 0) {
-		manager.EvalForVm(params.ctx->vmId, params.ctx);
+		const auto route = manager.RouteEval(params.ctx->vmId, params.ctx);
+		if (!route.ok) {
+			params.ctx->success = false;
+			params.ctx->error = route.errorCode == nullptr ? "EVAL_REJECTED" : route.errorCode;
+			_owner->OnEvalResult(params.ctx);
+		}
 	} else {
-		manager.Eval(params.ctx);
+		const auto debuggers = manager.GetDebuggers();
+		if (params.ctx && (debuggers.size() != 1 || !debuggers.front()->Eval(params.ctx))) {
+			params.ctx->success = false;
+			params.ctx->error = debuggers.size() > 1 ? "AMBIGUOUS_VM" : "VM_NOT_READY";
+			_owner->OnEvalResult(params.ctx);
+		}
 	}
 }

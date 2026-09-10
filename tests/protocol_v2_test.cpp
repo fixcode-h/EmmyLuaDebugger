@@ -91,6 +91,8 @@ int main() {
 	VmRecord record;
 	record.id = 7;
 	record.generation = 2;
+	record.contextGeneration = 3;
+	record.sourceEpoch = 4;
 	record.mainState = reinterpret_cast<lua_State*>(0x1000);
 	record.metadata = metadata;
 	record.state = VmLifecycleState::Ready;
@@ -104,15 +106,97 @@ int main() {
 	Require(snapshot["payload"]["vms"].size() == 1, "snapshot VM count");
 	Require(snapshot["payload"]["vms"][0]["vmId"] == "vm-7", "opaque VM id");
 	Require(snapshot["payload"]["vms"][0]["state"] == "READY", "snapshot VM state");
+	Require(snapshot["payload"]["vms"][0]["contextGeneration"] == 3,
+		"snapshot context generation");
+	Require(snapshot["payload"]["vms"][0]["sourceEpoch"] == 4,
+		"snapshot source epoch");
 
+	VmLifecycleEvent lifecycleEvent;
+	lifecycleEvent.vmId = 7;
+	lifecycleEvent.generation = 2;
+	lifecycleEvent.previous = VmLifecycleState::Paused;
+	lifecycleEvent.current = VmLifecycleState::Running;
+	lifecycleEvent.reason = "pie-reset";
+	lifecycleEvent.eventSeq = 4;
+	lifecycleEvent.contextGeneration = 3;
+	lifecycleEvent.sourceEpoch = 4;
+	lifecycleEvent.contextReset = true;
 	const nlohmann::json lifecycle = MakeVmLifecycleEnvelope(
 		session.AgentSessionId(), session.ConnectionEpoch(),
-		VmLifecycleEvent{7, 2, VmLifecycleState::Created, VmLifecycleState::Ready, "host-ready", 4});
+		lifecycleEvent);
 	Require(lifecycle["eventSeq"] == 4, "lifecycle event sequence");
 	Require(lifecycle["target"]["vmId"] == "vm-7", "lifecycle target VM");
-	Require(lifecycle["payload"]["current"] == "READY", "lifecycle current state");
+	Require(lifecycle["payload"]["current"] == "RUNNING", "lifecycle current state");
 	Require(lifecycle["payload"]["eventSeq"] == 4, "lifecycle payload sequence");
+	Require(lifecycle["payload"]["contextReset"] == true,
+		"lifecycle identifies context reset explicitly");
+	Require(lifecycle["payload"]["contextGeneration"] == 3 &&
+		lifecycle["payload"]["sourceEpoch"] == 4,
+		"lifecycle carries reset invalidation identities");
 
+	const nlohmann::json identityBase = nlohmann::json{
+		{"protocolVersion", 2}, {"kind", "request"}, {"type", "debug.unknown"},
+		{"requestId", "unknown-1"}, {"agentSessionId", session.AgentSessionId()},
+		{"connectionEpoch", 3}, {"payload", nlohmann::json{{"b", 2}, {"a", 1}}}
+	};
+	std::string identityError;
+	Require(ValidateV2RequestIdentity(identityBase, session.AgentSessionId(), 3, identityError),
+		"current v2 identity is accepted");
+	Require(!ValidateV2RequestIdentity(identityBase, session.AgentSessionId(), 4, identityError) &&
+		identityError == "STALE_CONNECTION_EPOCH", "old/future epoch is rejected");
+	nlohmann::json missingSession = identityBase;
+	missingSession.erase("agentSessionId");
+	Require(!ValidateV2RequestIdentity(missingSession, session.AgentSessionId(), 3, identityError) &&
+		identityError == "MISSING_AGENT_SESSION_ID", "missing session is rejected");
+	nlohmann::json missingEpoch = identityBase;
+	missingEpoch.erase("connectionEpoch");
+	Require(!ValidateV2RequestIdentity(missingEpoch, session.AgentSessionId(), 3, identityError) &&
+		identityError == "MISSING_CONNECTION_EPOCH", "missing epoch is rejected");
+	nlohmann::json wrongSession = identityBase;
+	wrongSession["agentSessionId"] = "agent-other";
+	Require(!ValidateV2RequestIdentity(wrongSession, session.AgentSessionId(), 3, identityError) &&
+		identityError == "STALE_AGENT_SESSION", "wrong session is rejected");
+	nlohmann::json reordered = nlohmann::json::object();
+	reordered["payload"] = nlohmann::json{{"a", 1}, {"b", 2}};
+	reordered["connectionEpoch"] = 3;
+	reordered["requestId"] = "unknown-1";
+	reordered["type"] = "debug.unknown";
+	reordered["kind"] = "request";
+	reordered["protocolVersion"] = 2;
+	reordered["agentSessionId"] = session.AgentSessionId();
+	Require(CanonicalV2Json(identityBase) == CanonicalV2Json(reordered),
+		"canonical JSON ignores object key order");
+
+	const auto unknownFirst = session.BeginRequest("unknown-1", CanonicalV2Json(identityBase), 3);
+	Require(unknownFirst == ProtocolSession::RequestDisposition::New, "unknown request can start");
+	const auto unknownRetry = session.BeginRequest("unknown-1", CanonicalV2Json(reordered), 3);
+	Require(unknownRetry == ProtocolSession::RequestDisposition::Duplicate,
+		"canonical duplicate request is detected");
+
+	V2DebugTarget parsedTarget;
+	const nlohmann::json debugRequest = {
+		{"contextGeneration", 3}, {"sourceEpoch", 4},
+		{"target", {{"vmId", "vm-7"}, {"pauseId", 2}, {"threadId", "thread-1"}, {"frameId", "frame-2-0"}}}
+	};
+	Require(ParseV2DebugTarget(debugRequest, true, parsedTarget, identityError), "debug target parses");
+	Require(parsedTarget.vmId == 7 && parsedTarget.pauseId == 2 &&
+		parsedTarget.contextGeneration == 3 && parsedTarget.sourceEpoch == 4,
+		"context identity survives protocol routing");
+	for (const char* invalid : {"vm-7junk", "vm--1", "vm-+1", "vm- 1", "vm-0", "vm-10000000000000000"}) {
+		auto malformed = debugRequest;
+		malformed["target"]["vmId"] = invalid;
+		Require(!ParseV2DebugTarget(malformed, true, parsedTarget, identityError), "invalid VM id rejected");
+	}
+	for (const auto& invalid : {nlohmann::json(-1), nlohmann::json(0), nlohmann::json(1.5), nlohmann::json("3")}) {
+		auto malformed = debugRequest;
+		malformed["contextGeneration"] = invalid;
+		Require(!ParseV2DebugTarget(malformed, true, parsedTarget, identityError), "invalid generation rejected");
+	}
+	auto missingThread = debugRequest;
+	missingThread["target"].erase("threadId");
+	Require(!ParseV2DebugTarget(missingThread, true, parsedTarget, identityError), "eval requires thread identity");
+	Require(ParseVmProtocolId("vm-7junk") == 0 && ParseVmProtocolId(-1) == 0,
+		"legacy parser also rejects partial hex ids and negative ids");
 	std::cout << "protocol v2 tests passed" << std::endl;
 	return 0;
 }

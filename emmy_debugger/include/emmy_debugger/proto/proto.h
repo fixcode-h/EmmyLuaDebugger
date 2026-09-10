@@ -65,6 +65,20 @@ public:
 	virtual void Deserialize(nlohmann::json json);
 };
 
+struct BreakPointContribution {
+	std::string owner;
+	std::string breakpointId;
+	std::string condition;
+	std::string logMessage;
+	std::string hitCondition;
+	int hitCount = 0;
+	bool runToHere = false;
+	bool autoContinue = false;
+
+	nlohmann::json Serialize() const;
+	void Deserialize(const nlohmann::json& json);
+};
+
 class BreakPoint : public JsonProtocol {
 public:
 	std::string file;
@@ -73,6 +87,19 @@ public:
 	std::string logMessage;
 	int hitCount = 0;
 	int line = 0;
+	bool runToHere = false;
+	std::string owner;
+	std::string breakpointId;
+	// Zero means every VM in the process. Non-zero values are opaque VM ids.
+	uint64_t vmId = 0;
+	std::string sourceCanonicalPath;
+	std::string sourceUri;
+	std::string sourceHash;
+	uint64_t sourceEpoch = 0;
+	uint64_t contextGeneration = 0;
+	bool sourceVerified = false;
+	bool composite = false;
+	std::vector<BreakPointContribution> contributions;
 
 	nlohmann::json Serialize() override;
 
@@ -82,6 +109,7 @@ public:
 class AddBreakpointParams : public JsonProtocol {
 public:
 	bool clear = false;
+	bool replaceComposite = false;
 	std::vector<std::shared_ptr<BreakPoint>> breakPoints;
 
 	nlohmann::json Serialize() override;
@@ -103,6 +131,7 @@ public:
 	DebugAction action = DebugAction::None;
 	uint64_t vmId = 0;
 	uint64_t pauseId = 0;
+	std::string threadId;
 
 	nlohmann::json Serialize() override;
 
@@ -121,6 +150,7 @@ public:
 	std::string valueTypeName;
 	std::vector<Idx<Variable>> children;
 	int cacheId = 0;
+	bool truncated = false;
 
 	nlohmann::json Serialize() override;
 
@@ -133,10 +163,16 @@ public:
 
 	std::string file;
 	std::string functionName;
+	// Opaque identity for this frame within one pause generation.
+	std::string frameId;
+	std::string sourceHash;
+	uint64_t sourceEpoch = 0;
 	int level = 0;
 	int line = 0;
 	std::vector<Idx<Variable>> localVariables;
 	std::vector<Idx<Variable>> upvalueVariables;
+	// Optional global root. Legacy peers simply omit this field.
+	std::vector<Idx<Variable>> globalVariables;
 
 	std::shared_ptr<Arena<Variable>> variableArena;
 
@@ -161,6 +197,18 @@ public:
 	int cacheId = 0;
 	uint64_t vmId = 0;
 	uint64_t pauseId = 0;
+	uint64_t contextGeneration = 0;
+	uint64_t sourceEpoch = 0;
+	uint64_t connectionEpoch = 0;
+	std::string threadId;
+	std::string frameId;
+	std::string sourceCanonicalPath;
+	std::string sourceHash;
+	// Empty keeps the legacy v1 evaluator. v2/AI requests must explicitly use
+	// VALUE_PATH so the native side enforces the policy independently.
+	std::string policy;
+	int maxNodes = 100;
+	int maxBytes = 64 * 1024;
 	Idx<Variable> result;
 	bool success = false;
 	bool setValue = false;
