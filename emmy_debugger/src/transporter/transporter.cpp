@@ -93,10 +93,7 @@ void Transporter::OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t
 		free(buf->base);
 		if (handle != nullptr) {
 			uv_read_stop(handle);
-			uv_handle_t* uvHandle = reinterpret_cast<uv_handle_t*>(handle);
-			if (!uv_is_closing(uvHandle)) {
-				uv_close(uvHandle, nullptr);
-			}
+			// The derived transporter owns closing and handle memory.
 		}
 
 		// on disconnect
@@ -444,6 +441,17 @@ void Transporter::OnLoopStop() {}
 void Transporter::OnWriteComplete(size_t len) {
 	std::lock_guard<std::mutex> lock(sendMutex);
 	if (outstandingBytes >= len) outstandingBytes -= len;
+}
+
+void Transporter::DropPendingWrites(uv_stream_t* handler) {
+	std::lock_guard<std::mutex> lock(sendMutex);
+	for (std::deque<PendingWrite>::iterator it = sendQueue.begin(); it != sendQueue.end();) {
+		if (it->handler == handler) {
+			free(it->data);
+			if (outstandingBytes >= it->len) outstandingBytes -= it->len;
+			it = sendQueue.erase(it);
+		} else ++it;
+	}
 }
 
 bool Transporter::ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err) 

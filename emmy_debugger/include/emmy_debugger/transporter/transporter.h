@@ -94,6 +94,7 @@ public:
 	size_t GetMaxFrameSize() const;
 	void Send(int cmd, const nlohmann::json document);
 	void OnWriteComplete(size_t len);
+	void DropPendingWrites(uv_stream_t* handler);
 	// void SetHandler(std::shared_ptr<EmmyFacade> facade);
 	void OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
 protected:

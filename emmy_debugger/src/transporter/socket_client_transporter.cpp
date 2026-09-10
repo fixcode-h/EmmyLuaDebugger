@@ -119,5 +119,6 @@ void SocketClientTransporter::Send(int cmd, const char* data, size_t len) {
 
 void SocketClientTransporter::OnClientClosed(uv_handle_t* handle) {
 	auto* self = static_cast<SocketClientTransporter*>(handle->data);
+	if (self != nullptr) self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
 	if (self != nullptr) self->clientInitialized = false;
 }

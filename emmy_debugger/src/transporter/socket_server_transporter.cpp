@@ -90,6 +90,14 @@ int SocketServerTransporter::Stop() {
 	return 0;
 }
 
+int SocketServerTransporter::GetPort() const {
+	sockaddr_storage address;
+	int length = sizeof(address);
+	if (uv_tcp_getsockname(const_cast<uv_tcp_t*>(&uvServer),
+		reinterpret_cast<sockaddr*>(&address), &length) != 0) return 0;
+	return ntohs(reinterpret_cast<const sockaddr_in*>(&address)->sin_port);
+}
+
 void SocketServerTransporter::OnLoopStop() {
 	CloseClient();
 	if (serverInitialized && !uv_is_closing((uv_handle_t*)&uvServer)) {
@@ -143,6 +151,7 @@ void SocketServerTransporter::CloseClient() {
 
 void SocketServerTransporter::OnClientClosed(uv_handle_t* handle) {
 	auto* self = static_cast<SocketServerTransporter*>(handle->data);
+	if (self != nullptr) self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
 	if (self != nullptr && self->uvClient == reinterpret_cast<uv_stream_t*>(handle)) {
 		self->uvClient = nullptr;
 	}

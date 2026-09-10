@@ -26,6 +26,7 @@ public:
 	~SocketServerTransporter();
 	void OnNewConnection(uv_stream_t* server, int status);
 	bool Listen(const std::string& host, int port, std::string& err);
+	int GetPort() const;
 	void Send(const char* data, size_t len);
 public:
 	int Stop() override;

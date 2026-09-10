@@ -28,10 +28,12 @@ int main() {
 
 	SocketServerTransporter server;
 	std::string error;
-	Require(server.Listen("127.0.0.1", 43199, error), "localhost server starts");
+	Require(server.Listen("127.0.0.1", 0, error), "localhost server starts");
+	const int port = server.GetPort();
+	Require(port != 0, "dynamic localhost port is available");
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	SocketClientTransporter client;
-	if (!client.Connect("127.0.0.1", 43199, error)) {
+	if (!client.Connect("127.0.0.1", port, error)) {
 		std::cerr << "client connect error: " << error << std::endl;
 		std::exit(1);
 	}
