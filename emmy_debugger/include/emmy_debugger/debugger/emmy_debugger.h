@@ -241,5 +241,5 @@ private:
 	mutable std::atomic<uint64_t> cacheGeneration;
 
 	bool displayCustomTypeInfo;
-	std::bitset<LUA_NUMTAGS> registeredTypes;
+	std::bitset<LUA_TTHREAD + 1> registeredTypes;
 };

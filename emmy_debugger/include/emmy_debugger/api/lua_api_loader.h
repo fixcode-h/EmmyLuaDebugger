@@ -294,6 +294,9 @@ typedef const char*(*dll_lua_getlocal)(lua_State* L, const lua_Debug* ar, int n)
 DEF_LUA_API(lua_getlocal);
 typedef const char*(*dll_lua_getupvalue)(lua_State* L, int funcindex, int n);
 DEF_LUA_API(lua_getupvalue);
+
+typedef void(*dll_lua_getfenv)(lua_State* L, int index);
+DEF_LUA_API(lua_getfenv);
 typedef const char*(*dll_lua_setupvalue)(lua_State* L, int funcindex, int n);
 DEF_LUA_API(lua_setupvalue);
 typedef void (*dll_lua_sethook)(lua_State* L, lua_Hook func, int mask, int count);

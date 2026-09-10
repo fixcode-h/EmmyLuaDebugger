@@ -30,6 +30,7 @@ HMODULE FindLuaModule()
 	MODULEENTRY32 module;
 	module.dwSize = sizeof(MODULEENTRY32);
 	HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+	if (hSnapshot == INVALID_HANDLE_VALUE) return nullptr;
 	BOOL moreModules = Module32First(hSnapshot, &module);
 
 	while (moreModules)
@@ -41,6 +42,7 @@ HMODULE FindLuaModule()
 		}
 		moreModules = Module32Next(hSnapshot, &module);
 	}
+	CloseHandle(hSnapshot);
 	return hModule;
 }
 
@@ -85,6 +87,7 @@ IMP_LUA_API(lua_getstack);
 IMP_LUA_API(lua_getinfo);
 IMP_LUA_API(lua_getlocal);
 IMP_LUA_API(lua_getupvalue);
+IMP_LUA_API(lua_getfenv);
 IMP_LUA_API(lua_setupvalue);
 IMP_LUA_API(lua_sethook);
 IMP_LUA_API(lua_gethook);
@@ -441,6 +444,8 @@ extern "C" bool SetupLuaAPI()
 	LOAD_LUA_API(lua_getinfo);
 	LOAD_LUA_API(lua_getlocal);
 	LOAD_LUA_API(lua_getupvalue);
+	// Lua 5.2+ removed getfenv; require it only for legacy environment reads.
+	lua_getfenv = reinterpret_cast<dll_lua_getfenv>(LoadAPI("lua_getfenv"));
 	LOAD_LUA_API(lua_setupvalue);
 	LOAD_LUA_API(lua_sethook);
 	LOAD_LUA_API(lua_gethook);

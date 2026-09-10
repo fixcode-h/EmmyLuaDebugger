@@ -1785,6 +1785,7 @@ bool Debugger::DoRestrictedEval(std::shared_ptr<EvalContext> evalContext) {
 		}
 	}
 	const std::string& root = segments.front().text;
+	const bool functionEnvironment = luaVersion == LuaVersion::LUA_51 || luaVersion == LuaVersion::LUA_JIT;
 	bool found = false;
 	int localEnvironmentIndex = 0;
 	int localIndex = 1;
@@ -1796,7 +1797,7 @@ bool Debugger::DoRestrictedEval(std::shared_ptr<EvalContext> evalContext) {
 			found = true;
 			continue; // keep searching for an inner local with the same name
 		}
-		if (!found && std::strcmp(name, "_ENV") == 0 && lua_istable(L, -1)) {
+		if (!functionEnvironment && !found && std::strcmp(name, "_ENV") == 0 && lua_istable(L, -1)) {
 			if (localEnvironmentIndex != 0) {
 				lua_insert(L, localEnvironmentIndex);
 				lua_remove(L, localEnvironmentIndex + 1);
@@ -1821,11 +1822,21 @@ bool Debugger::DoRestrictedEval(std::shared_ptr<EvalContext> evalContext) {
 				found = true;
 				break;
 			}
-			if (environmentIndex == 0 && std::strcmp(name, "_ENV") == 0 && lua_istable(L, -1)) {
+			if (!functionEnvironment && environmentIndex == 0 && std::strcmp(name, "_ENV") == 0 && lua_istable(L, -1)) {
 				environmentIndex = lua_gettop(L);
 				continue;
 			}
 			lua_pop(L, 1);
+		}
+		if (!found && functionEnvironment) {
+#if !defined(EMMY_USE_LUA_SOURCE) || defined(EMMY_LUA_51) || defined(EMMY_LUA_JIT)
+#ifndef EMMY_USE_LUA_SOURCE
+			if (lua_getfenv == nullptr) return fail("UNSUPPORTED_CAPABILITY");
+#endif
+			// Lua 5.1/LuaJIT 的 _ENV 只是普通变量；全局名字从函数环境 raw 读取。
+			lua_getfenv(L, functionIndex);
+			environmentIndex = lua_gettop(L);
+#endif
 		}
 		if (!found && environmentIndex != 0) {
 			lua_pushstring(L, root.c_str());

@@ -2,6 +2,7 @@
 #include "emmy_debugger/debugger/emmy_debugger.h"
 #include "emmy_debugger/debugger/hook_state.h"
 #include "emmy_debugger/debugger/emmy_debugger_lib.h"
+#include "emmy_debugger/api/lua_version.h"
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -59,7 +60,7 @@ void Capture(lua_State* state, lua_Debug* ar) {
 	Require(!debugger->Eval(eval, true) && eval->error == "SOURCE_IDENTITY_MISMATCH", "mismatched host source hash is rejected on Lua owner");
 	eval->sourceHash = sourceHash;
 	eval->expr = "marker";
-	Require(debugger->Eval(eval, true) && eval->result->value == "23", "global fallback uses the frame's custom _ENV");
+	Require(debugger->Eval(eval, true) && eval->result->value == "23", "global fallback uses the frame's custom environment");
 	eval->expr = "string";
 	Require(!debugger->Eval(eval, true) && eval->error == "VALUE_NOT_FOUND", "custom _ENV never leaks unrelated _G values");
 	eval->expr = "shadow";
@@ -116,9 +117,13 @@ void Capture(lua_State* state, lua_Debug* ar) {
 void Run(lua_State* state, const std::shared_ptr<Debugger>& debugger) {
 	activeDebugger = debugger;
 	lua_sethook(state, Capture, LUA_MASKLINE, 0);
-	const char* script =
+	const std::string environment = luaVersion == LuaVersion::LUA_51 || luaVersion == LuaVersion::LUA_JIT
+		? "setfenv(1, {marker=23}); local _ENV={marker=99}; "
+		: "local _ENV={marker=23}; ";
+	const std::string script = std::string(
 		"metamethodCalls = 0\n"
-		"local value = setmetatable({11,22,answer=42,binary='a\\0b'}, {__index=function() metamethodCalls=metamethodCalls+1; return 99 end,__tostring=function() metamethodCalls=metamethodCalls+1; return 'forbidden' end}); local huge=string.rep('x',4096); local _ENV={marker=23}; local shadow=0; do local shadow=7\n"
+		"local value = setmetatable({11,22,answer=42,binary='a\\0b'}, {__index=function() metamethodCalls=metamethodCalls+1; return 99 end,__tostring=function() metamethodCalls=metamethodCalls+1; return 'forbidden' end}); local huge=string.rep('x',4096); ") + environment +
+		"local shadow=0; do local shadow=7\n"
 		"result = value.answer\n"
 		"end\n";
 	EmmyLuaSourceIdentity source{};
@@ -129,7 +134,7 @@ void Run(lua_State* state, const std::shared_ptr<Debugger>& debugger) {
 	source.canonicalPath = "C:/harness/runtime.lua";
 	source.sha256 = sourceHash.c_str();
 	Require(Emmy_RegisterLuaSource(debugger->GetVmId(), &source) != 0, "Host registers loaded source identity");
-	Require(luaL_loadbuffer(state, script, std::strlen(script), source.chunkName) == 0, "runtime script compiles");
+	Require(luaL_loadbuffer(state, script.data(), script.size(), source.chunkName) == 0, "runtime script compiles");
 	Require(lua_pcall(state, 0, 0, 0) == 0, "runtime script completes after resume");
 	lua_sethook(state, nullptr, 0, 0);
 }
@@ -145,7 +150,7 @@ int main() {
 	badAbi.size = sizeof(badAbi);
 	badAbi.version = EMMY_HOST_API_VERSION;
 	badAbi.major = 5;
-	badAbi.minor = 3;
+	badAbi.minor = luaVersion == LuaVersion::LUA_53 ? 4 : 3;
 	EmmyHostVmMetadata badMetadata{};
 	badMetadata.size = sizeof(badMetadata);
 	badMetadata.version = EMMY_HOST_API_VERSION;
