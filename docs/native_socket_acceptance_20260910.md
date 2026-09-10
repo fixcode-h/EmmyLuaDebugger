@@ -29,7 +29,11 @@ ctest --test-dir build-runtime-20260910 `
 
 结果为 **0/2，通过 0，失败 2**。并发测试报 `client connect error: connection timed out`；协议 harness 已 listen ready，但客户端有界重试后仍无法连接。失败文件保存在 `build-runtime-20260910/tcp-results.xml`。
 
-本机对照诊断：.NET TcpListener/TcpClient 回环成功；独立纯 Winsock 程序不链接 Emmy 或 libuv，仍在 bind/listen 成功后 connect 超时、连接停留于 SYN_SENT；.NET 客户端连接 Native 服务端也超时。证据指向本机 Native 进程的网络访问环境限制，具体拦截组件尚未确认。本次没有修改防火墙、安全软件或网络策略。
+本机对照诊断：.NET TcpListener/TcpClient 回环成功；独立纯 Winsock 程序不链接 Emmy 或 libuv，仍在 bind/listen 成功后 connect 超时；.NET 客户端连接 Native 服务端也超时。
+
+本轮已通过只读 WFP 事件确定拦截位置：独立诊断程序的 PID、临时端口、时间与入站 drop 完整对应，随后真实 `emmy_native_socket_harness.exe` 在端口 39547 的连接也命中同一 filter 70739。该 filter 的 provider 为 `FWPM_PROVIDER_MPSSVC_WF`、layer 为 `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`、action 为 `FWP_ACTION_BLOCK`，名称为 `Query User`，origin 为 `Query User Default`。这是 Windows 防火墙对没有显式放行的入站连接进行的默认拦截。本轮没有修改安全策略。
+
+不能仅根据 `codex_sandbox_offline_*` 规则名称归因：本次 Native 进程 SID 与这些规则限定的离线用户 SID 不同，诊断进程没有 restricted SID。WFP 原始导出包含本机其它程序信息，仅保存在父仓库忽略的 `build/verification-tools`，不提交。
 
 本地其余测试使用显式 `-E` 排除 TCP；CI **不排除** TCP，仍要求其通过。不得将本地结果描述为“Native 全矩阵通过”。
 
@@ -49,8 +53,18 @@ ctest --test-dir <build-directory> `
   --output-on-failure --no-tests=error --timeout 30 --output-junit final-results.xml
 ```
 
-x64 动态目录为 `build-ninja4`、`build-release-20260910`；x86 动态目录为 `build-x86-debug-20260910`、`build-x86-release-20260910`；x64 source 为 `build-runtime-20260910`。x86 Debug 曾切换为 source 完成整套测试，其报告单独保存为 `build-x86-debug-20260910/source-results.xml`，随后恢复动态模式。
+x64 动态目录为 `build-ninja4`、`build-release-20260910`；x86 动态目录为 `build-x86-debug-20260910`、`build-x86-release-20260910`；x64 source 为 `build-runtime-20260910`，x86 source 使用父仓库独立目录 `build/native-x86-runtime54`。四个动态配置与两个 source 配置均已在本轮源码上重新构建验证，报告为各目录 `final-results.xml`。
 
 `protocol_fuzz_cases.jsonl` 的 12 条 fixture 已由测试实际读取并断言：3 条 framing case、9 条 envelope/target case；重复 requestId、epoch、取消等另由 ProtocolSession 测试和真实协议 harness 覆盖。fixture 文件存在本身不算测试通过。
 
-Linux/macOS 的 Debug/Release、远端 CI、实际 EasyHook 注入/重复附加/Detach 后 PIE 周期仍未验证。
+## 本轮新增版本与平台验证
+
+- Lua 5.1.5 / 5.2.4 / 5.3.5：Windows x64 source 模式各 3/3，通过真实 pipe 协议、hook dispatcher、VM lifecycle。目录为父仓库 `build/native-lua51`、`build/native-lua52`、`build/native-lua53`；报告为各目录 `version-results.xml`。Lua 5.4.6 的相同场景在上述 17 项中覆盖。
+- 修复 Lua 5.1 的类型计数常量、Lua 5.2 静态库误用 DLL 导入标记；生命周期 fixture 根据实际版本选择不匹配 ABI。
+- Lua 5.1 使用 `lua_getfenv` raw 读取函数环境，普通 `_ENV` 局部变量不再遮蔽函数环境。Lua 5.2+ 保留真正的 `_ENV` 语义。
+- Lua 5.2+ 的 nil/非表 `_ENV` 返回 `VALUE_NOT_FOUND`，不会回退默认全局作用域。真实暂停帧回归覆盖将环境改为 nil、查询拒绝和环境恢复。
+- 新增 `emmy_dynamic_lua_loader_test <DLL路径> <版本号>`，真实加载独立构建的 Lua 5.1/5.4 DLL，调用生产 `SetupLuaAPI` 并 raw 读取 42；两版本均通过。`lua_getfenv` 为可选符号，不能让没有此 API 的 5.2+ 加载失败。
+- 使用官方 Zig 0.14.1 在 Windows 交叉编译 Linux x86_64/glibc 2.17：source 与 dynamic API 两模式全部目标编译和链接通过。目录为父仓库 `build/native-linux-zig`、`build/native-linux-dynamic-zig`。这只证明 Linux 目标可编译，未执行 Linux ELF。
+- `native_ide_fixture` 是用于 IDEA 平台集成测试的独立 Host，使用现有 pipe、认证和生命周期 API。stdin 的 `stop`/EOF 会唤醒暂停并关闭 VM；`reset` 在 owner thread 上重建 source epoch；90 秒 watchdog 防止测试异常后无限等待。它不覆盖 EasyHook 注入。
+
+Linux/macOS 实际运行、远端 CI、实际 EasyHook 注入/重复附加/Detach 后 PIE 周期仍未验证。Native CI 保留 Windows TCP，并扩展到 Lua 51/52/53/54 source 版本；LuaJIT 目录目前只有说明文件，没有虚构运行证据。
