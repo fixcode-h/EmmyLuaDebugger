@@ -290,10 +290,21 @@ int main(int argc, char** argv) {
 			{"type", type}, {"requestId", requestId}, {"agentSessionId", session},
 			{"connectionEpoch", epoch}, {"payload", payload}};
 	};
+	const auto invalidBreakpointSnapshot = Request(client,
+		envelope("debug.breakpoints.replace", "bp-invalid", {{"revision", 1}}),
+		"debug.breakpoints.replace");
+	Require(invalidBreakpointSnapshot["ok"] == false &&
+		invalidBreakpointSnapshot["error"]["code"] == "INVALID_BREAKPOINT_SNAPSHOT",
+		"invalid breakpoint snapshot is rejected without disconnecting");
 	Request(client, envelope("debug.breakpoints.replace", "bp-1", {
 		{"revision", 1}, {"breakpoints", nlohmann::json::array({
 			{{"file", "@native_socket_harness.lua"}, {"line", 3},
-			 {"owner", "CLI:native"}, {"breakpointId", "bp-native"}, {"vmId", vmId}}
+			 {"owner", "CLI:native"}, {"breakpointId", "bp-native"}, {"vmId", vmId},
+			 {"composite", true},
+			 {"contributions", {{{"owner", "CLI:native"}, {"breakpointId", "bp-native"},
+				 {"autoContinue", false}}}},
+			 {"sourceIdentity", {{"canonicalPath", "native_socket_harness.lua"},
+				 {"sourceHash", ""}, {"verified", false}}}}
 		})}}), "debug.breakpoints.replace");
 
 	std::thread runner([&] {

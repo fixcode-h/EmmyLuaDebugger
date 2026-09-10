@@ -670,7 +670,8 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		const nlohmann::json& payload = document["payload"];
 		const uint64_t revision = payload.is_object() && payload.contains("revision") && payload["revision"].is_number_unsigned()
 			? payload["revision"].get<uint64_t>() : 0;
-		if (revision == 0 || !payload["breakpoints"].is_array() || payload["breakpoints"].size() > 4096) {
+		if (revision == 0 || !payload.is_object() || !payload.contains("breakpoints") ||
+			!payload["breakpoints"].is_array() || payload["breakpoints"].size() > 4096) {
 			nlohmann::json error = nlohmann::json::object();
 			error["code"] = "INVALID_BREAKPOINT_SNAPSHOT";
 			error["message"] = "revision and a bounded breakpoints array are required";

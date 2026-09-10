@@ -95,14 +95,14 @@ nlohmann::json BreakPointContribution::Serialize() const {
 }
 
 void BreakPointContribution::Deserialize(const nlohmann::json& json) {
-	if (json["owner"].is_string()) owner = json["owner"].get<std::string>();
-	if (json["breakpointId"].is_string()) breakpointId = json["breakpointId"].get<std::string>();
-	if (json["condition"].is_string()) condition = json["condition"].get<std::string>();
-	if (json["logMessage"].is_string()) logMessage = json["logMessage"].get<std::string>();
-	if (json["hitCondition"].is_string()) hitCondition = json["hitCondition"].get<std::string>();
-	if (json["hitCount"].is_number_integer()) hitCount = json["hitCount"].get<int>();
-	if (json["runToHere"].is_boolean()) runToHere = json["runToHere"].get<bool>();
-	if (json["autoContinue"].is_boolean()) autoContinue = json["autoContinue"].get<bool>();
+	if (json.contains("owner") && json["owner"].is_string()) owner = json["owner"].get<std::string>();
+	if (json.contains("breakpointId") && json["breakpointId"].is_string()) breakpointId = json["breakpointId"].get<std::string>();
+	if (json.contains("condition") && json["condition"].is_string()) condition = json["condition"].get<std::string>();
+	if (json.contains("logMessage") && json["logMessage"].is_string()) logMessage = json["logMessage"].get<std::string>();
+	if (json.contains("hitCondition") && json["hitCondition"].is_string()) hitCondition = json["hitCondition"].get<std::string>();
+	if (json.contains("hitCount") && json["hitCount"].is_number_integer()) hitCount = json["hitCount"].get<int>();
+	if (json.contains("runToHere") && json["runToHere"].is_boolean()) runToHere = json["runToHere"].get<bool>();
+	if (json.contains("autoContinue") && json["autoContinue"].is_boolean()) autoContinue = json["autoContinue"].get<bool>();
 }
 
 nlohmann::json BreakPoint::Serialize() {
@@ -172,20 +172,23 @@ void BreakPoint::Deserialize(nlohmann::json json) {
 	if (json["composite"].is_boolean()) {
 		composite = json["composite"].get<bool>();
 	}
-	const nlohmann::json& source = json["sourceIdentity"];
-	if (source.is_object()) {
-		if (source["canonicalPath"].is_string()) sourceCanonicalPath = source["canonicalPath"].get<std::string>();
-		if (source["uri"].is_string()) sourceUri = source["uri"].get<std::string>();
-		if (source["sourceHash"].is_string()) sourceHash = source["sourceHash"].get<std::string>();
-		if (source["sourceEpoch"].is_number_unsigned() || source["sourceEpoch"].is_number_integer()) {
-			sourceEpoch = source["sourceEpoch"].get<uint64_t>();
-		}
-		if (source["contextGeneration"].is_number_unsigned() || source["contextGeneration"].is_number_integer()) {
-			contextGeneration = source["contextGeneration"].get<uint64_t>();
-		}
-		if (source["verified"].is_boolean()) sourceVerified = source["verified"].get<bool>();
+	const nlohmann::json* source = nullptr;
+	if (json.contains("sourceIdentity") && json["sourceIdentity"].is_object()) {
+		source = &json["sourceIdentity"];
 	}
-	if (json["contributions"].is_array()) {
+	if (source != nullptr) {
+		if (source->contains("canonicalPath") && (*source)["canonicalPath"].is_string()) sourceCanonicalPath = (*source)["canonicalPath"].get<std::string>();
+		if (source->contains("uri") && (*source)["uri"].is_string()) sourceUri = (*source)["uri"].get<std::string>();
+		if (source->contains("sourceHash") && (*source)["sourceHash"].is_string()) sourceHash = (*source)["sourceHash"].get<std::string>();
+		if (source->contains("sourceEpoch") && ((*source)["sourceEpoch"].is_number_unsigned() || (*source)["sourceEpoch"].is_number_integer())) {
+			sourceEpoch = (*source)["sourceEpoch"].get<uint64_t>();
+		}
+		if (source->contains("contextGeneration") && ((*source)["contextGeneration"].is_number_unsigned() || (*source)["contextGeneration"].is_number_integer())) {
+			contextGeneration = (*source)["contextGeneration"].get<uint64_t>();
+		}
+		if (source->contains("verified") && (*source)["verified"].is_boolean()) sourceVerified = (*source)["verified"].get<bool>();
+	}
+	if (json.contains("contributions") && json["contributions"].is_array()) {
 		for (nlohmann::json::const_iterator it = json["contributions"].begin();
 			 it != json["contributions"].end(); ++it) {
 			BreakPointContribution contribution;
