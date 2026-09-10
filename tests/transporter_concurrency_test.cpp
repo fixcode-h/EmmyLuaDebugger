@@ -61,6 +61,11 @@ void CheckConditionWaitDeadlineAndWake() {
 	EmmyMutex mutex = EMMY_MUTEX_INIT;
 	EmmyCondVar condition = EMMY_CONDVAR_INIT;
 	bool ready = false;
+	std::thread falseNotifier([&] {
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		SRWUniqueLock lock(mutex);
+		EMMY_COND_NOTIFY_ALL(condition);
+	});
 	{
 		SRWUniqueLock lock(mutex);
 		const auto started = std::chrono::steady_clock::now();
@@ -68,8 +73,9 @@ void CheckConditionWaitDeadlineAndWake() {
 			[&ready] { return ready; }, std::chrono::milliseconds(100));
 		const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now() - started).count();
-		Require(!signaled && elapsed >= 80, "condition wait honors deadline");
+		Require(!signaled && !ready && elapsed >= 80, "condition wait ignores false notification");
 	}
+	falseNotifier.join();
 	std::thread notifier([&] {
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		SRWUniqueLock lock(mutex);

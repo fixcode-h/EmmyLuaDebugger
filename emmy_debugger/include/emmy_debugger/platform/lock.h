@@ -90,7 +90,7 @@ inline bool EmmyCondWaitFor(CONDITION_VARIABLE& cv, SRWUniqueLock& lock,
         const ULONGLONG now = GetTickCount64();
         if (now >= deadline) return pred();
         const ULONGLONG remaining = deadline - now;
-        const DWORD waitMs = remaining > MAXDWORD ? MAXDWORD : static_cast<DWORD>(remaining);
+        const DWORD waitMs = remaining >= MAXDWORD ? MAXDWORD - 1 : static_cast<DWORD>(remaining);
         if (!SleepConditionVariableSRW(&cv, lock.mutex(), waitMs, 0)) {
             if (GetLastError() == ERROR_TIMEOUT) return pred();
         }

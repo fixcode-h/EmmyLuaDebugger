@@ -19,10 +19,11 @@ public:
 	using UnhookFunction = std::function<bool(HookHandle)>;
 
 	struct HookChainRecord {
-		void* previousHook = nullptr;
-		int previousMask = 0;
-		int previousCount = 0;
-		void* emmyHook = nullptr;
+		HookChainRecord() : previousHook(nullptr), previousMask(0), previousCount(0), emmyHook(nullptr) {}
+		void* previousHook;
+		int previousMask;
+		int previousCount;
+		void* emmyHook;
 		std::string owner;
 	};
 
