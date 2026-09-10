@@ -45,11 +45,14 @@ PipelineClientTransporter::~PipelineClientTransporter() {
 
 int PipelineClientTransporter::Stop() {
 	Transporter::Stop();
+	return 0;
+}
+
+void PipelineClientTransporter::OnLoopStop() {
 	if (clientInitialized) {
 		uv_read_stop((uv_stream_t*)&uvClient);
 		if (!uv_is_closing((uv_handle_t*)&uvClient)) uv_close((uv_handle_t*)&uvClient, OnClientClosed);
 	}
-	return 0;
 }
 
 bool PipelineClientTransporter::Connect(const std::string& name, std::string& err) {

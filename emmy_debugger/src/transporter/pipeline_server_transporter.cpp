@@ -87,9 +87,12 @@ bool PipelineServerTransporter::pipe(const std::string& name, std::string& err) 
 
 int PipelineServerTransporter::Stop() {
 	Transporter::Stop();
+	return 0;
+}
+
+void PipelineServerTransporter::OnLoopStop() {
 	CloseClient();
 	if (serverInitialized && !uv_is_closing((uv_handle_t*)&uvServer)) uv_close((uv_handle_t*)&uvServer, OnServerClosed);
-	return 0;
 }
 
 void PipelineServerTransporter::Send(int cmd, const char* data, size_t len) {

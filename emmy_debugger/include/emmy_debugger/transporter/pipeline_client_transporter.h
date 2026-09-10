@@ -32,6 +32,7 @@ public:
 
 	bool Connect(const std::string& name, std::string& err);
 	int Stop() override;
+	void OnLoopStop() override;
 	void Send(int cmd, const char* data, size_t len) override;
 	void OnPipeConnection(uv_connect_t* req, int status);
 	static void OnClientClosed(uv_handle_t* handle);

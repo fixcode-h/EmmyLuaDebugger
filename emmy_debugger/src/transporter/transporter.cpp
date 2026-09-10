@@ -34,6 +34,7 @@ Transporter::Transporter(bool server):
 {
 	loop = uv_loop_new();
 	asyncInitialized.store(false);
+	stopRequested.store(false);
 	bufSize = 10 * 1024;
 	buf = static_cast<char*>(malloc(bufSize));
 }
@@ -276,11 +277,12 @@ bool Transporter::IsServerMode() const
 ////////////////////////////////////////////////////////////////////////////////
 // send data
 
-typedef struct { uv_write_t req; uv_buf_t buf; } write_req_t;
+typedef struct { uv_write_t req; uv_buf_t buf; Transporter* owner; } write_req_t;
 
 static void after_write(uv_write_t* req, int status)
 {
 	const auto* writeReq = reinterpret_cast<write_req_t*>(req);
+	if (writeReq->owner != nullptr) writeReq->owner->OnWriteComplete(writeReq->buf.len);
 	free(writeReq->buf.base);
 	delete writeReq;
 }
@@ -307,8 +309,12 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 	newData[newLen - 1] = '\n';
 	{
 		std::lock_guard<std::mutex> lock(sendMutex);
+		if (stopRequested.load(std::memory_order_acquire) || sendQueue.size() >= 256 ||
+			outstandingBytes + newLen > maxFrameSize * 4) { free(newData); return; }
+		outstandingBytes += newLen;
 		sendQueue.push_back(PendingWrite{handler, newData, newLen});
 	}
+	std::lock_guard<std::mutex> asyncLock(asyncMutex);
 	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 }
 
@@ -328,8 +334,12 @@ void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
 	memcpy(newData, data, len);
 	{
 		std::lock_guard<std::mutex> lock(sendMutex);
+		if (stopRequested.load(std::memory_order_acquire) || sendQueue.size() >= 256 ||
+			outstandingBytes + len > maxFrameSize * 4) { free(newData); return; }
+		outstandingBytes += len;
 		sendQueue.push_back(PendingWrite{handler, newData, len});
 	}
+	std::lock_guard<std::mutex> asyncLock(asyncMutex);
 	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 }
 
@@ -347,10 +357,11 @@ void Transporter::JoinEventLoop()
 
 void Transporter::Run()
 {
-	running.store(true, std::memory_order_release);
+	running.store(!stopRequested.load(std::memory_order_acquire), std::memory_order_release);
 	if (uv_async_init(loop, &sendAsync, OnSendAsync) != 0) return;
 	sendAsync.data = this;
 	asyncInitialized.store(true, std::memory_order_release);
+	if (!running.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 	while (running.load(std::memory_order_acquire) || uv_loop_alive(loop))
 		uv_run(loop, UV_RUN_DEFAULT);
 	DrainSendQueue();
@@ -363,6 +374,8 @@ void Transporter::Run()
 int Transporter::Stop()
 {
 	running.store(false, std::memory_order_release);
+	stopRequested.store(true, std::memory_order_release);
+	std::lock_guard<std::mutex> asyncLock(asyncMutex);
 	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
 	return 0;
 }
@@ -371,9 +384,13 @@ void Transporter::OnSendAsync(uv_async_t* handle) {
 	if (handle == nullptr || handle->data == nullptr) return;
 	Transporter* transporter = static_cast<Transporter*>(handle->data);
 	transporter->DrainSendQueue();
+	if (!transporter->running.load(std::memory_order_acquire)) transporter->OnLoopStop();
 	if (!transporter->running.load(std::memory_order_acquire) &&
-		!uv_is_closing(reinterpret_cast<uv_handle_t*>(handle)))
+		!uv_is_closing(reinterpret_cast<uv_handle_t*>(handle))) {
+		std::lock_guard<std::mutex> asyncLock(transporter->asyncMutex);
+		transporter->asyncInitialized.store(false, std::memory_order_release);
 		uv_close(reinterpret_cast<uv_handle_t*>(handle), nullptr);
+	}
 }
 
 void Transporter::DrainSendQueue() {
@@ -385,15 +402,24 @@ void Transporter::DrainSendQueue() {
 	for (std::deque<PendingWrite>::iterator it = pending.begin(); it != pending.end(); ++it) {
 		if (it->handler == nullptr || uv_is_closing(reinterpret_cast<uv_handle_t*>(it->handler))) {
 			free(it->data);
+			OnWriteComplete(it->len);
 			continue;
 		}
 		write_req_t* request = new write_req_t();
+		request->owner = this;
 		request->buf = uv_buf_init(it->data, static_cast<unsigned int>(it->len));
 		if (uv_write(&request->req, it->handler, &request->buf, 1, after_write) < 0) {
 			free(it->data);
 			delete request;
 		}
 	}
+}
+
+void Transporter::OnLoopStop() {}
+
+void Transporter::OnWriteComplete(size_t len) {
+	std::lock_guard<std::mutex> lock(sendMutex);
+	if (outstandingBytes >= len) outstandingBytes -= len;
 }
 
 bool Transporter::ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err) 

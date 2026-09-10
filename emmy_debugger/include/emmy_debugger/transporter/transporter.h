@@ -77,8 +77,11 @@ class Transporter {
 	struct PendingWrite { uv_stream_t* handler; char* data; size_t len; };
 	std::mutex sendMutex;
 	std::deque<PendingWrite> sendQueue;
+	size_t outstandingBytes;
 	uv_async_t sendAsync;
 	std::atomic<bool> asyncInitialized;
+	std::atomic<bool> stopRequested;
+	std::mutex asyncMutex;
 protected:
 	uv_loop_t* loop;
 public:
@@ -90,6 +93,7 @@ public:
 	void SetMaxFrameSize(size_t size);
 	size_t GetMaxFrameSize() const;
 	void Send(int cmd, const nlohmann::json document);
+	void OnWriteComplete(size_t len);
 	// void SetHandler(std::shared_ptr<EmmyFacade> facade);
 	void OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
 protected:
@@ -109,6 +113,7 @@ protected:
 	static void OnSendAsync(uv_async_t* handle);
 	virtual void OnDisconnect();
 	virtual void OnConnect(bool suc);
+	virtual void OnLoopStop();
     // helper for both client and server
 	static bool ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err);
 };

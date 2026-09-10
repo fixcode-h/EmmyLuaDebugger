@@ -50,14 +50,17 @@ SocketClientTransporter::~SocketClientTransporter() {
 
 int SocketClientTransporter::Stop() {
 	Transporter::Stop();
+	EMMY_COND_NOTIFY_ALL(cv);
+	return 0;
+}
+
+void SocketClientTransporter::OnLoopStop() {
 	if (clientInitialized) {
 		uv_read_stop((uv_stream_t*)&uvClient);
 		if (!uv_is_closing((uv_handle_t*)&uvClient)) {
 			uv_close((uv_handle_t*)&uvClient, OnClientClosed);
 		}
 	}
-	EMMY_COND_NOTIFY_ALL(cv);
-	return 0;
 }
 
 bool SocketClientTransporter::Connect(const std::string& host, int port, std::string& err) {

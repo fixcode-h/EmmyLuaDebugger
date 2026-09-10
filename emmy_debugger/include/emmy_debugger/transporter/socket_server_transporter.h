@@ -34,4 +34,5 @@ private:
 	void CloseClient();
 	static void OnClientClosed(uv_handle_t* handle);
 	static void OnServerClosed(uv_handle_t* handle);
+	void OnLoopStop() override;
 };

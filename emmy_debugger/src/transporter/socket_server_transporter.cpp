@@ -82,11 +82,14 @@ void SocketServerTransporter::Send(const char* data, size_t len)
 
 int SocketServerTransporter::Stop() {
 	Transporter::Stop();
+	return 0;
+}
+
+void SocketServerTransporter::OnLoopStop() {
 	CloseClient();
 	if (serverInitialized && !uv_is_closing((uv_handle_t*)&uvServer)) {
 		uv_close((uv_handle_t*)&uvServer, OnServerClosed);
 	}
-	return 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
