@@ -27,12 +27,13 @@ public:
 	void OnNewConnection(uv_stream_t* server, int status);
 	bool Listen(const std::string& host, int port, std::string& err);
 	void Send(const char* data, size_t len);
-private:
+public:
 	int Stop() override;
+	void OnLoopStop() override;
+private:
 	void Send(int cmd, const char* data, size_t len) override;
 	void OnDisconnect() override;
 	void CloseClient();
 	static void OnClientClosed(uv_handle_t* handle);
 	static void OnServerClosed(uv_handle_t* handle);
-	void OnLoopStop() override;
 };
