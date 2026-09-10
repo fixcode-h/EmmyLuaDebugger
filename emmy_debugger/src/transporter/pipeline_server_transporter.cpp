@@ -47,7 +47,6 @@ PipelineServerTransporter::~PipelineServerTransporter() {
 }
 
 bool PipelineServerTransporter::pipe(const std::string& name, std::string& err) {
-	loop = uv_default_loop();
 	std::string fullName;
 #ifdef _WIN32
 	{
@@ -95,8 +94,13 @@ void PipelineServerTransporter::OnLoopStop() {
 	if (serverInitialized && !uv_is_closing((uv_handle_t*)&uvServer)) uv_close((uv_handle_t*)&uvServer, OnServerClosed);
 }
 
+void PipelineServerTransporter::OnDisconnect() {
+	Transporter::OnDisconnect();
+	CloseClient();
+}
+
 void PipelineServerTransporter::Send(int cmd, const char* data, size_t len) {
-	Transporter::Send((uv_stream_t*)uvClient, cmd, data, len);
+	SendActive(cmd, data, len);
 }
 
 void PipelineServerTransporter::OnPipeConnection(uv_stream_t* pipe, int status) {
@@ -112,6 +116,7 @@ void PipelineServerTransporter::OnPipeConnection(uv_stream_t* pipe, int status) 
 		uvClient->data = this;
 		const int r = uv_accept((uv_stream_t*)&uvServer, (uv_stream_t*)uvClient);
 		if (r != 0) { uv_close((uv_handle_t*)uvClient, OnClientClosed); return; }
+		SetActiveHandler((uv_stream_t*)uvClient);
 		OnConnect(true);
 		if (uv_read_start((uv_stream_t*)uvClient, echo_alloc, after_read) != 0) OnDisconnect();
 	}
@@ -126,6 +131,10 @@ void PipelineServerTransporter::CloseClient() {
 
 void PipelineServerTransporter::OnClientClosed(uv_handle_t* handle) {
 	auto* self = static_cast<PipelineServerTransporter*>(handle->data);
+	if (self != nullptr) {
+		self->InvalidateActiveHandler(reinterpret_cast<uv_stream_t*>(handle));
+		self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
+	}
 	if (self != nullptr && self->uvClient == reinterpret_cast<uv_pipe_t*>(handle)) self->uvClient = nullptr;
 	free(handle);
 }

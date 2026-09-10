@@ -82,7 +82,7 @@ bool SocketServerTransporter::Listen(const std::string& host, int port, std::str
 
 void SocketServerTransporter::Send(const char* data, size_t len)
 {
-	Transporter::Send((uv_stream_t*)uvClient, data, len);
+	SendActive(data, len);
 }
 
 int SocketServerTransporter::Stop() {
@@ -125,6 +125,7 @@ void SocketServerTransporter::OnNewConnection(uv_stream_t* server, int status) {
 	r = uv_read_start(uvClient, echo_alloc, after_read);
 	if (r != 0) { uv_close((uv_handle_t*)uvClient, OnClientClosed); return; }
 
+	SetActiveHandler(uvClient);
 	OnConnect(true);
 }
 
@@ -132,7 +133,7 @@ void SocketServerTransporter::OnNewConnection(uv_stream_t* server, int status) {
 // send data
 
 void SocketServerTransporter::Send(int cmd, const char* data, size_t len) {
-	Transporter::Send((uv_stream_t*)uvClient, cmd, data, len);
+	SendActive(cmd, data, len);
 }
 
 void SocketServerTransporter::OnDisconnect() {
@@ -151,7 +152,10 @@ void SocketServerTransporter::CloseClient() {
 
 void SocketServerTransporter::OnClientClosed(uv_handle_t* handle) {
 	auto* self = static_cast<SocketServerTransporter*>(handle->data);
-	if (self != nullptr) self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
+	if (self != nullptr) {
+		self->InvalidateActiveHandler(reinterpret_cast<uv_stream_t*>(handle));
+		self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
+	}
 	if (self != nullptr && self->uvClient == reinterpret_cast<uv_stream_t*>(handle)) {
 		self->uvClient = nullptr;
 	}

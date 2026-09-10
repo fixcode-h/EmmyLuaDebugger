@@ -63,6 +63,12 @@ void SocketClientTransporter::OnLoopStop() {
 	}
 }
 
+void SocketClientTransporter::OnDisconnect() {
+	Transporter::OnDisconnect();
+	if (clientInitialized && !uv_is_closing((uv_handle_t*)&uvClient))
+		uv_close((uv_handle_t*)&uvClient, OnClientClosed);
+}
+
 bool SocketClientTransporter::Connect(const std::string& host, int port, std::string& err) {
 	if (clientInitialized) {
 		err = "socket client is already connected or closing";
@@ -99,6 +105,7 @@ bool SocketClientTransporter::Connect(const std::string& host, int port, std::st
 void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
 	this->connectionStatus = status;
 	if (status >= 0) {
+		SetActiveHandler((uv_stream_t*)&uvClient);
 		OnConnect(true);
 		if (uv_read_start((uv_stream_t*)&uvClient, echo_alloc, after_read) != 0) {
 			Stop();
@@ -114,11 +121,14 @@ void SocketClientTransporter::OnConnection(uv_connect_t* req, int status) {
 }
 
 void SocketClientTransporter::Send(int cmd, const char* data, size_t len) {
-	Transporter::Send((uv_stream_t*)&uvClient, cmd, data, len);
+	SendActive(cmd, data, len);
 }
 
 void SocketClientTransporter::OnClientClosed(uv_handle_t* handle) {
 	auto* self = static_cast<SocketClientTransporter*>(handle->data);
-	if (self != nullptr) self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
+	if (self != nullptr) {
+		self->InvalidateActiveHandler(reinterpret_cast<uv_stream_t*>(handle));
+		self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
+	}
 	if (self != nullptr) self->clientInitialized = false;
 }

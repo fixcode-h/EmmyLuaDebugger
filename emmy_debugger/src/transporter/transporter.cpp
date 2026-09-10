@@ -227,21 +227,26 @@ void Transporter::OnDisconnect()
 	if (disconnectNotified.exchange(true, std::memory_order_acq_rel)) {
 		return;
 	}
-	connected = false;
-	readHead = true;
-	receiveSize = 0;
+	SetConnectionState(false);
 	EmmyFacade::Get().OnDisconnect();
 }
 
 void Transporter::OnConnect(bool suc)
 {
+	SetConnectionState(suc);
+	EmmyFacade::Get().OnConnect(suc);
+}
+
+void Transporter::SetConnectionState(bool suc)
+{
 	connected = suc;
-	disconnectNotified.store(false, std::memory_order_release);
-	protocolFailed.store(false, std::memory_order_release);
+	if (suc) {
+		disconnectNotified.store(false, std::memory_order_release);
+		protocolFailed.store(false, std::memory_order_release);
+	}
 	readHead = true;
 	receiveSize = 0;
 
-	EmmyFacade::Get().OnConnect(suc);
 }
 
 void Transporter::SetMaxFrameSize(size_t size)
@@ -321,7 +326,9 @@ void Transporter::Send(uv_stream_t* handler, int cmd, const char* data, size_t l
 		if (stopRequested.load(std::memory_order_acquire) || sendQueue.size() >= 256 ||
 			outstandingBytes + newLen > maxFrameSize * 4) { free(newData); return; }
 		outstandingBytes += newLen;
-		sendQueue.push_back(PendingWrite{handler, newData, newLen});
+		uint64_t generation = activeGeneration;
+		if (handler != activeHandler) { free(newData); return; }
+		sendQueue.push_back(PendingWrite{handler, generation, newData, newLen});
 	}
 	std::lock_guard<std::mutex> asyncLock(asyncMutex);
 	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
@@ -346,7 +353,9 @@ void Transporter::Send(uv_stream_t* handler, const char* data, size_t len)
 		if (stopRequested.load(std::memory_order_acquire) || sendQueue.size() >= 256 ||
 			outstandingBytes + len > maxFrameSize * 4) { free(newData); return; }
 		outstandingBytes += len;
-		sendQueue.push_back(PendingWrite{handler, newData, len});
+		uint64_t generation = activeGeneration;
+		if (handler != activeHandler) { free(newData); return; }
+		sendQueue.push_back(PendingWrite{handler, generation, newData, len});
 	}
 	std::lock_guard<std::mutex> asyncLock(asyncMutex);
 	if (asyncInitialized.load(std::memory_order_acquire)) uv_async_send(&sendAsync);
@@ -380,15 +389,12 @@ void Transporter::Run()
 		hasQueued = !sendQueue.empty();
 	}
 	if (!running.load(std::memory_order_acquire) || hasQueued) uv_async_send(&sendAsync);
-	while (running.load(std::memory_order_acquire) || uv_loop_alive(loop)) {
-		uv_run(loop, UV_RUN_NOWAIT);
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-	}
+	uv_run(loop, UV_RUN_DEFAULT);
 	DrainSendQueue();
 	asyncInitialized.store(false, std::memory_order_release);
 	if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(&sendAsync)))
 		uv_close(reinterpret_cast<uv_handle_t*>(&sendAsync), nullptr);
-	while (uv_loop_alive(loop)) uv_run(loop, UV_RUN_NOWAIT);
+	while (uv_loop_alive(loop)) uv_run(loop, UV_RUN_DEFAULT);
 }
 
 int Transporter::Stop()
@@ -420,7 +426,12 @@ void Transporter::DrainSendQueue() {
 		pending.swap(sendQueue);
 	}
 	for (std::deque<PendingWrite>::iterator it = pending.begin(); it != pending.end(); ++it) {
-		if (it->handler == nullptr || uv_is_closing(reinterpret_cast<uv_handle_t*>(it->handler))) {
+		bool valid = false;
+		{
+			std::lock_guard<std::mutex> lock(sendMutex);
+			valid = it->handler != nullptr && it->handler == activeHandler && it->generation == activeGeneration;
+		}
+		if (!valid || uv_is_closing(reinterpret_cast<uv_handle_t*>(it->handler))) {
 			free(it->data);
 			OnWriteComplete(it->len);
 			continue;
@@ -452,6 +463,38 @@ void Transporter::DropPendingWrites(uv_stream_t* handler) {
 			it = sendQueue.erase(it);
 		} else ++it;
 	}
+}
+
+void Transporter::SetActiveHandler(uv_stream_t* handler) {
+	std::lock_guard<std::mutex> lock(sendMutex);
+	activeHandler = handler;
+	++activeGeneration;
+}
+
+void Transporter::InvalidateActiveHandler(uv_stream_t* handler) {
+	std::lock_guard<std::mutex> lock(sendMutex);
+	if (handler == nullptr || activeHandler == handler) {
+		activeHandler = nullptr;
+		++activeGeneration;
+	}
+}
+
+void Transporter::SendActive(int cmd, const char* data, size_t len) {
+	uv_stream_t* handler;
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		handler = activeHandler;
+	}
+	Send(handler, cmd, data, len);
+}
+
+void Transporter::SendActive(const char* data, size_t len) {
+	uv_stream_t* handler;
+	{
+		std::lock_guard<std::mutex> lock(sendMutex);
+		handler = activeHandler;
+	}
+	Send(handler, data, len);
 }
 
 bool Transporter::ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err) 

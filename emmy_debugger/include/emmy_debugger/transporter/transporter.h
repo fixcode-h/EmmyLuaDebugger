@@ -21,6 +21,7 @@
 #include <thread>
 #include <deque>
 #include <mutex>
+#include <cstdint>
 #include "uv.h"
 #include "nlohmann/json_fwd.hpp"
 
@@ -74,10 +75,12 @@ class Transporter {
 	size_t maxFrameSize;
 	std::atomic<bool> disconnectNotified;
 	std::atomic<bool> protocolFailed;
-	struct PendingWrite { uv_stream_t* handler; char* data; size_t len; };
+	struct PendingWrite { uv_stream_t* handler; uint64_t generation; char* data; size_t len; };
 	std::mutex sendMutex;
 	std::deque<PendingWrite> sendQueue;
-	size_t outstandingBytes;
+	size_t outstandingBytes = 0;
+	uv_stream_t* activeHandler = nullptr;
+	uint64_t activeGeneration = 0;
 	uv_async_t sendAsync;
 	std::atomic<bool> asyncInitialized;
 	std::atomic<bool> stopRequested;
@@ -99,6 +102,8 @@ public:
 	void OnAfterRead(uv_stream_t* handle, ssize_t nread, const uv_buf_t* buf);
 protected:
 	virtual void Send(int cmd, const char* data, size_t len) = 0;
+	void SendActive(int cmd, const char* data, size_t len);
+	void SendActive(const char* data, size_t len);
 	void Send(uv_stream_t* handler, int cmd, const char* data, size_t len);
 	// send raw data
 	void Send(uv_stream_t* handler, const char* data, size_t len);
@@ -115,6 +120,9 @@ protected:
 	virtual void OnDisconnect();
 	virtual void OnConnect(bool suc);
 	virtual void OnLoopStop();
+	void SetConnectionState(bool suc);
+	void SetActiveHandler(uv_stream_t* handler);
+	void InvalidateActiveHandler(uv_stream_t* handler);
     // helper for both client and server
 	static bool ParseSocketAddress(const std::string &host, int port, sockaddr_storage *addr, std::string &err);
 };

@@ -38,4 +38,5 @@ public:
 	void OnConnection(uv_connect_t* req, int status);
 	static void OnClientClosed(uv_handle_t* handle);
 	void OnLoopStop() override;
+	void OnDisconnect() override;
 };

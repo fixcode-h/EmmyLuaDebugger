@@ -55,6 +55,12 @@ void PipelineClientTransporter::OnLoopStop() {
 	}
 }
 
+void PipelineClientTransporter::OnDisconnect() {
+	Transporter::OnDisconnect();
+	if (clientInitialized && !uv_is_closing((uv_handle_t*)&uvClient))
+		uv_close((uv_handle_t*)&uvClient, OnClientClosed);
+}
+
 bool PipelineClientTransporter::Connect(const std::string& name, std::string& err) {
 	if (clientInitialized) { err = "pipe client is already connected or closing"; return false; }
 	connectionNotified = false;
@@ -90,7 +96,7 @@ bool PipelineClientTransporter::Connect(const std::string& name, std::string& er
 }
 
 void PipelineClientTransporter::Send(int cmd, const char* data, size_t len) {
-	Transporter::Send((uv_stream_t*)&uvClient, cmd, data, len);
+	SendActive(cmd, data, len);
 }
 
 void PipelineClientTransporter::OnPipeConnection(uv_connect_t* pipe, int status) {
@@ -99,6 +105,7 @@ void PipelineClientTransporter::OnPipeConnection(uv_connect_t* pipe, int status)
 		OnConnect(false);
 	}
 	else {
+		SetActiveHandler((uv_stream_t*)&uvClient);
 		OnConnect(true);
 		uv_read_start((uv_stream_t*)&uvClient, echo_alloc, after_read);
 	}
@@ -109,5 +116,9 @@ void PipelineClientTransporter::OnPipeConnection(uv_connect_t* pipe, int status)
 
 void PipelineClientTransporter::OnClientClosed(uv_handle_t* handle) {
 	auto* self = static_cast<PipelineClientTransporter*>(handle->data);
-	if (self != nullptr) self->clientInitialized = false;
+	if (self != nullptr) {
+		self->InvalidateActiveHandler(reinterpret_cast<uv_stream_t*>(handle));
+		self->DropPendingWrites(reinterpret_cast<uv_stream_t*>(handle));
+		self->clientInitialized = false;
+	}
 }
