@@ -65,6 +65,12 @@ x64 动态目录为 `build-ninja4`、`build-release-20260910`；x86 动态目录
 - Lua 5.2+ 的 nil/非表 `_ENV` 返回 `VALUE_NOT_FOUND`，不会回退默认全局作用域。真实暂停帧回归覆盖将环境改为 nil、查询拒绝和环境恢复。
 - 新增 `emmy_dynamic_lua_loader_test <DLL路径> <版本号>`，真实加载独立构建的 Lua 5.1/5.4 DLL，调用生产 `SetupLuaAPI` 并 raw 读取 42；两版本均通过。`lua_getfenv` 为可选符号，不能让没有此 API 的 5.2+ 加载失败。
 - 使用官方 Zig 0.14.1 在 Windows 交叉编译 Linux x86_64/glibc 2.17：source 与 dynamic API 两模式全部目标编译和链接通过。目录为父仓库 `build/native-linux-zig`、`build/native-linux-dynamic-zig`。这只证明 Linux 目标可编译，未执行 Linux ELF。
-- `native_ide_fixture` 是用于 IDEA 平台集成测试的独立 Host，使用现有 pipe、认证和生命周期 API。stdin 的 `stop`/EOF 会唤醒暂停并关闭 VM；`reset` 在 owner thread 上重建 source epoch；90 秒 watchdog 防止测试异常后无限等待。它不覆盖 EasyHook 注入。
+- `native_ide_fixture` 是用于 IDEA 平台集成测试的独立 Host，使用现有 pipe、认证和生命周期 API。stdin 的 `stop`/EOF 会唤醒暂停并关闭 VM；`reset` 在 owner thread 上重建 source epoch；`close-vm` 只关闭 VM，Agent 与 pipe 继续在线，便于区分正常 VM 关闭与传输断线；90 秒 watchdog 防止测试异常后无限等待。已单独验证 ready → close-vm → VM 关闭且进程存活 → stop → exit 0。它不覆盖 EasyHook 注入。
+
+## IDEA 联调补出的协议回归
+
+真实 IDEA 使用 Gson 发送断点时会省略可选字段。Native 原先通过 const JSON 下标读取缺少的 `sourceIdentity.contextGeneration` 以及 contribution 的条件/日志字段，会触发 nlohmann JSON 断言，导致断点替换 ACK 丢失。现已在这些字段访问前检查存在性和类型；只有 revision 而缺少 breakpoints 的请求返回 `INVALID_BREAKPOINT_SNAPSHOT`。
+
+真实 pipe harness 已加入 IDE 风格的稀疏 source/composite contribution，以及非法快照后连接仍可使用的回归。该修复对应 Native `31247a4`；六个 Windows 非 TCP 配置已重新构建并保持 14/14 或 17/17。这是跨语言实际报文验证补出的缺陷，不能用两个语言各自的 DTO 单元测试代替。
 
 Linux/macOS 实际运行、远端 CI、实际 EasyHook 注入/重复附加/Detach 后 PIE 周期仍未验证。Native CI 保留 Windows TCP，并扩展到 Lua 51/52/53/54 source 版本；LuaJIT 目录目前只有说明文件，没有虚构运行证据。
