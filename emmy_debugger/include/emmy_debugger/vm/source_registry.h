@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -24,11 +25,12 @@ public:
 		HostSourceIdentity& result, bool legacyFuzzy = false) const;
 	std::size_t Invalidate(uint64_t vmId, uint64_t sourceEpoch = 0);
 	std::size_t Size() const;
+	static std::string NormalizePath(const std::string& path);
 
 private:
-	static std::string NormalizePath(const std::string& path);
 	static std::string Key(uint64_t vmId, uint64_t sourceEpoch, const std::string& chunkName);
 	static bool ValidSha256(const std::string& hash);
+	static const std::size_t kMaxFieldBytes = 4096;
 
 	const std::size_t maxEntries_;
 	mutable std::mutex mutex_;

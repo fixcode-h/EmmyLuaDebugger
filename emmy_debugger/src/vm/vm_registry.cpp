@@ -31,11 +31,13 @@ uint64_t NativeVmRegistry::Register(lua_State* mainState, const VmMetadata& meta
 	if (mainState == nullptr) {
 		return 0;
 	}
-	return RegisterWithId(AllocateVmRegistrationId(), 0, mainState, metadata);
+	return RegisterWithId(AllocateVmRegistrationId(), 0, 0, 0, mainState, metadata);
 }
 
 uint64_t NativeVmRegistry::RegisterWithId(uint64_t registrationId,
 										  uint64_t generation,
+										  uint64_t contextGeneration,
+										  uint64_t sourceEpoch,
 										  lua_State* mainState,
 										  const VmMetadata& metadata) {
 	if (registrationId == 0 || mainState == nullptr) {
@@ -51,7 +53,13 @@ uint64_t NativeVmRegistry::RegisterWithId(uint64_t registrationId,
 
 		auto active = activeByState_.find(mainState);
 		if (active != activeByState_.end()) {
-			return active->second;
+			auto activeRecord = records_.find(active->second);
+			if (activeRecord != records_.end() &&
+				activeRecord->second->state != VmLifecycleState::Closed &&
+				activeRecord->second->state != VmLifecycleState::Lost) {
+				return active->second;
+			}
+			activeByState_.erase(active);
 		}
 
 		auto existing = records_.find(registrationId);
@@ -75,17 +83,35 @@ uint64_t NativeVmRegistry::RegisterWithId(uint64_t registrationId,
 		std::shared_ptr<VmRecord> record(new VmRecord());
 		record->id = resultId;
 		record->generation = nextGeneration;
+		record->contextGeneration = contextGeneration == 0 ? 1 : contextGeneration;
+		record->sourceEpoch = sourceEpoch == 0 ? 1 : sourceEpoch;
 		record->mainState = mainState;
 		record->metadata = metadata;
 		record->state = VmLifecycleState::Created;
+		if (metadata.hasAbiDescriptor) {
+			if (processAbiFingerprint_.empty()) {
+				processAbiFingerprint_ = metadata.abi.Fingerprint();
+			} else if (processAbiFingerprint_ != metadata.abi.Fingerprint()) {
+				record->metadata.abiCompatible = false;
+				record->metadata.abiError = "MIXED_LUA_ABI_UNSUPPORTED";
+			}
+			if (!record->metadata.abiCompatible) {
+				record->state = VmLifecycleState::Error;
+			}
+		}
 		record->eventSeq = ++nextEventSeq_;
 		records_[resultId] = record;
 		activeByState_[mainState] = resultId;
 
 		event.vmId = resultId;
 		event.generation = record->generation;
+		event.contextGeneration = record->contextGeneration;
+		event.sourceEpoch = record->sourceEpoch;
 		event.previous = VmLifecycleState::Unknown;
-		event.current = VmLifecycleState::Created;
+		event.current = record->state;
+		if (record->state == VmLifecycleState::Error) {
+			event.reason = record->metadata.abiError;
+		}
 		event.eventSeq = record->eventSeq;
 		sink = eventSink_;
 		emit = true;
@@ -100,8 +126,11 @@ uint64_t NativeVmRegistry::RegisterWithId(uint64_t registrationId,
 uint64_t NativeVmRegistry::Adopt(uint64_t registrationId,
 								 uint64_t generation,
 								 lua_State* mainState,
-								 const VmMetadata& metadata) {
-	return RegisterWithId(registrationId, generation, mainState, metadata);
+								 const VmMetadata& metadata,
+								 uint64_t contextGeneration,
+								 uint64_t sourceEpoch) {
+	return RegisterWithId(registrationId, generation, contextGeneration, sourceEpoch,
+									 mainState, metadata);
 }
 
 bool NativeVmRegistry::IsTransitionAllowed(VmLifecycleState from, VmLifecycleState to) const {
@@ -152,6 +181,17 @@ bool NativeVmRegistry::IsTransitionAllowed(VmLifecycleState from, VmLifecycleSta
 	return false;
 }
 
+bool NativeVmRegistry::RejectAbi(uint64_t registrationId, const std::string& error) {
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = records_.find(registrationId);
+		if (it == records_.end() || !IsTransitionAllowed(it->second->state, VmLifecycleState::Error)) return false;
+		it->second->metadata.abiCompatible = false;
+		it->second->metadata.abiError = error;
+	}
+	return SetState(registrationId, VmLifecycleState::Error, error);
+}
+
 bool NativeVmRegistry::SetState(uint64_t registrationId,
 							VmLifecycleState state,
 							const std::string& reason) {
@@ -178,6 +218,8 @@ bool NativeVmRegistry::SetState(uint64_t registrationId,
 
 		event.vmId = record->id;
 		event.generation = record->generation;
+		event.contextGeneration = record->contextGeneration;
+		event.sourceEpoch = record->sourceEpoch;
 		event.previous = record->state;
 		event.current = state;
 		event.reason = reason;
@@ -185,7 +227,10 @@ bool NativeVmRegistry::SetState(uint64_t registrationId,
 
 		record->state = state;
 		record->eventSeq = event.eventSeq;
-		if (state == VmLifecycleState::Closed) {
+		// A Lost VM is no longer safe to address through its raw lua_State
+		// pointer. Keep the record for lifecycle diagnostics, but remove the
+		// address from the active index immediately.
+		if (state == VmLifecycleState::Closed || state == VmLifecycleState::Lost) {
 			activeByState_.erase(record->mainState);
 		}
 		sink = eventSink_;
@@ -210,6 +255,50 @@ bool NativeVmRegistry::EndClose(uint64_t registrationId) {
 	return SetState(registrationId, VmLifecycleState::Closed, "host-closed");
 }
 
+bool NativeVmRegistry::ResetContext(uint64_t registrationId, const std::string& reason) {
+	if (registrationId == 0) return false;
+
+	VmLifecycleEvent event;
+	VmEventSink sink;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto it = records_.find(registrationId);
+		if (it == records_.end()) return false;
+		const std::shared_ptr<VmRecord>& record = it->second;
+		if (record->state == VmLifecycleState::Closed ||
+			record->state == VmLifecycleState::Closing ||
+			record->state == VmLifecycleState::Lost) {
+			return false;
+		}
+
+		const uint64_t nextContext = record->contextGeneration + 1;
+		const uint64_t nextSource = record->sourceEpoch + 1;
+		// A wrapped epoch would make an old reference appear current. Refuse the
+		// reset instead of reusing an identity.
+		if (nextContext == 0 || nextSource == 0) return false;
+
+		event.vmId = record->id;
+		event.generation = record->generation;
+		event.contextGeneration = nextContext;
+		event.sourceEpoch = nextSource;
+		event.previous = record->state;
+		event.current = record->state == VmLifecycleState::Paused
+			? VmLifecycleState::Running : record->state;
+		event.reason = reason.empty() ? "context-reset" : reason;
+		event.eventSeq = ++nextEventSeq_;
+		event.contextReset = true;
+
+		record->contextGeneration = nextContext;
+		record->sourceEpoch = nextSource;
+		record->state = event.current;
+		record->eventSeq = event.eventSeq;
+		sink = eventSink_;
+	}
+
+	if (sink) sink(event);
+	return true;
+}
+
 bool NativeVmRegistry::Release(uint64_t registrationId) {
 	if (registrationId == 0) {
 		return true;
@@ -222,6 +311,12 @@ bool NativeVmRegistry::Release(uint64_t registrationId) {
 	if (it->second->state != VmLifecycleState::Closed &&
 		it->second->state != VmLifecycleState::Lost) {
 		return false;
+	}
+	// Repair an index left by an older terminal transition and make Release
+	// safe when an address has already been reused by another VM.
+	const auto active = activeByState_.find(it->second->mainState);
+	if (active != activeByState_.end() && active->second == registrationId) {
+		activeByState_.erase(active);
 	}
 	records_.erase(it);
 	return true;

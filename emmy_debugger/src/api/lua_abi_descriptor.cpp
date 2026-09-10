@@ -161,3 +161,46 @@ bool ValidateLuaAbiDescriptor(const LuaAbiDescriptor& expected,
 	}
 	return true;
 }
+
+bool ValidateLuaAbiDescriptorForPublicApi(const LuaAbiDescriptor& expected,
+										  const LuaAbiDescriptor& actual,
+										  std::string& error) {
+	error.clear();
+	if (expected.luaIdSize > 1024 || actual.luaIdSize > 1024) {
+		error = "LUA_IDSIZE_UNSAFE";
+		return false;
+	}
+	if (expected.major != 0 && (actual.major == 0 || expected.major != actual.major)) {
+		error = "LUA_ABI_MAJOR_MISMATCH";
+		return false;
+	}
+	if (expected.minor != 0 && (actual.minor == 0 || expected.minor != actual.minor)) {
+		error = "LUA_ABI_MINOR_MISMATCH";
+		return false;
+	}
+	// Source builds use their exact lua_Debug definition. Dynamic builds use
+	// a padded buffer and do not claim knowledge of private lua_State offsets.
+	if (actual.luaIdSize != 0 && expected.luaIdSize != 0 && expected.luaIdSize != actual.luaIdSize) {
+		error = "LUA_IDSIZE_MISMATCH";
+		return false;
+	}
+	return true;
+}
+
+bool ValidateLuaAbiDescriptorForRegistration(const LuaAbiDescriptor& descriptor,
+	std::string& error) {
+	error.clear();
+	if (descriptor.luaIdSize > 1024) {
+		error = "LUA_IDSIZE_UNSAFE";
+		return false;
+	}
+	if (descriptor.major != 0 && descriptor.major != 5) {
+		error = "LUA_ABI_MAJOR_UNSUPPORTED";
+		return false;
+	}
+	if (descriptor.minor > 4) {
+		error = "LUA_ABI_MINOR_UNSUPPORTED";
+		return false;
+	}
+	return true;
+}

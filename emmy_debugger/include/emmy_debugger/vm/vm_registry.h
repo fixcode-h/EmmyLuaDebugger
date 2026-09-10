@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "emmy_debugger/vm/lua_abi_descriptor.h"
+
 struct lua_State;
 
 enum class VmLifecycleState {
@@ -30,11 +32,20 @@ struct VmMetadata {
 	std::string luaVersionHint;
 	std::string runtimeModule;
 	std::string discovery;
+	LuaAbiDescriptor abi;
+	bool hasAbiDescriptor = false;
+	bool abiCompatible = true;
+	std::string abiError;
 };
 
 struct VmRecord {
 	uint64_t id = 0;
+	// Registration generation identifies a lifetime at a reused lua_State
+	// address. Context/source generations identify resets while the same VM
+	// registration remains alive (PIE restart, hot reload, etc.).
 	uint64_t generation = 0;
+	uint64_t contextGeneration = 1;
+	uint64_t sourceEpoch = 1;
 	lua_State* mainState = nullptr;
 	VmMetadata metadata;
 	VmLifecycleState state = VmLifecycleState::Unknown;
@@ -48,6 +59,9 @@ struct VmLifecycleEvent {
 	VmLifecycleState current = VmLifecycleState::Unknown;
 	std::string reason;
 	uint64_t eventSeq = 0;
+	uint64_t contextGeneration = 0;
+	uint64_t sourceEpoch = 0;
+	bool contextReset = false;
 };
 
 struct VmRegistrySnapshot {
@@ -72,11 +86,17 @@ public:
 	uint64_t Adopt(uint64_t registrationId,
 				  uint64_t generation,
 				  lua_State* mainState,
-				  const VmMetadata& metadata);
+				  const VmMetadata& metadata,
+				  uint64_t contextGeneration = 1,
+				  uint64_t sourceEpoch = 1);
 
 	bool NotifyReady(uint64_t registrationId);
+	bool RejectAbi(uint64_t registrationId, const std::string& error);
 	bool BeginClose(uint64_t registrationId, const std::string& reason);
 	bool EndClose(uint64_t registrationId);
+	// Invalidates all pause/frame/evaluation/source references while retaining
+	// the VM registration and its opaque identity.
+	bool ResetContext(uint64_t registrationId, const std::string& reason);
 	bool SetState(uint64_t registrationId, VmLifecycleState state, const std::string& reason);
 	bool Release(uint64_t registrationId);
 	bool SetDisplayName(uint64_t registrationId, const std::string& displayName);
@@ -91,6 +111,8 @@ public:
 private:
 	uint64_t RegisterWithId(uint64_t registrationId,
 						   uint64_t generation,
+						   uint64_t contextGeneration,
+						   uint64_t sourceEpoch,
 						   lua_State* mainState,
 						   const VmMetadata& metadata);
 	bool IsTransitionAllowed(VmLifecycleState from, VmLifecycleState to) const;
@@ -101,4 +123,5 @@ private:
 	std::map<lua_State*, uint64_t> generationByState_;
 	VmEventSink eventSink_;
 	uint64_t nextEventSeq_;
+	std::string processAbiFingerprint_;
 };
