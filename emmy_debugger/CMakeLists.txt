@@ -20,6 +20,7 @@ target_sources(emmy_debugger
         PRIVATE
         #src/api
         src/api/lua_api.cpp
+        src/api/lua_abi_descriptor.cpp
         src/api/lua_state.cpp
         src/api/lua_version.cpp
 
@@ -36,17 +37,21 @@ target_sources(emmy_debugger
         src/debugger/emmy_debugger_manager.cpp
         src/debugger/emmy_debugger_lib.cpp
         src/debugger/hook_state.cpp
+        src/debugger/hook_dispatcher.cpp
         src/debugger/extension_point.cpp
 
         #src/vm
         src/vm/vm_registry.cpp
         src/vm/host_vm_registry.cpp
+        src/vm/host_value_provider.cpp
+        src/vm/source_registry.cpp
 
         #src/proto
         src/proto/proto.cpp
         src/proto/proto_handler.cpp
         src/proto/protocol_session.cpp
         src/proto/protocol_v2.cpp
+        src/proto/restricted_eval.cpp
 
         #src/arena
         src/arena/arena.cpp
@@ -129,8 +134,56 @@ target_link_libraries(
 )
 
 if(EMMY_VM_REGISTRY_TEST)
+    add_executable(emmy_source_registry_test ${emmy_SOURCE_DIR}/tests/source_registry_test.cpp src/vm/source_registry.cpp)
+    target_include_directories(emmy_source_registry_test PRIVATE ${emmy_debugger_SOURCE_DIR}/include)
+    add_test(NAME emmy_source_registry_test COMMAND emmy_source_registry_test)
+    add_executable(emmy_transporter_concurrency_test ${emmy_SOURCE_DIR}/tests/transporter_concurrency_test.cpp)
+    target_link_libraries(emmy_transporter_concurrency_test PRIVATE emmy_debugger)
+    add_test(NAME emmy_transporter_concurrency_test COMMAND emmy_transporter_concurrency_test)
+    set_tests_properties(emmy_transporter_concurrency_test PROPERTIES TIMEOUT 30)
+    if(WIN32)
+        add_test(NAME emmy_transporter_concurrency_pipe_test
+                COMMAND emmy_transporter_concurrency_test --pipe)
+        set_tests_properties(emmy_transporter_concurrency_pipe_test PROPERTIES TIMEOUT 30)
+    endif()
+    add_executable(emmy_host_abi_compatibility_test
+            ${emmy_SOURCE_DIR}/tests/host_abi_compatibility_test.cpp
+            src/api/lua_abi_descriptor.cpp src/api/lua_version.cpp)
+    target_include_directories(emmy_host_abi_compatibility_test PRIVATE ${emmy_debugger_SOURCE_DIR}/include)
+    add_test(NAME emmy_host_abi_compatibility_test COMMAND emmy_host_abi_compatibility_test)
+    add_executable(emmy_lua_abi_descriptor_test
+            ${emmy_SOURCE_DIR}/tests/lua_abi_descriptor_test.cpp
+            src/api/lua_abi_descriptor.cpp src/api/lua_version.cpp)
+    target_include_directories(emmy_lua_abi_descriptor_test PRIVATE ${emmy_debugger_SOURCE_DIR}/include)
+    add_test(NAME emmy_lua_abi_descriptor_test COMMAND emmy_lua_abi_descriptor_test)
+
+    add_executable(emmy_host_value_provider_test
+            ${emmy_SOURCE_DIR}/tests/host_value_provider_test.cpp src/vm/host_value_provider.cpp)
+    target_include_directories(emmy_host_value_provider_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include ${emmy_SOURCE_DIR}/third-party/nlohmann/include)
+    add_test(NAME emmy_host_value_provider_test COMMAND emmy_host_value_provider_test)
+    if(EMMY_USE_LUA_SOURCE AND NOT EMMY_LUA_VERSION STREQUAL "jit")
+        add_executable(emmy_native_socket_harness ${emmy_SOURCE_DIR}/tests/native_socket_harness.cpp)
+        target_link_libraries(emmy_native_socket_harness PRIVATE emmy_debugger)
+        add_test(NAME emmy_native_socket_harness COMMAND emmy_native_socket_harness)
+        set_tests_properties(emmy_native_socket_harness PROPERTIES TIMEOUT 30)
+        if(WIN32)
+            add_test(NAME emmy_native_pipe_harness COMMAND emmy_native_socket_harness --pipe)
+            set_tests_properties(emmy_native_pipe_harness PROPERTIES TIMEOUT 30)
+        endif()
+        add_executable(emmy_hook_dispatcher_test ${emmy_SOURCE_DIR}/tests/hook_dispatcher_test.cpp)
+        target_link_libraries(emmy_hook_dispatcher_test PRIVATE emmy_debugger)
+        add_test(NAME emmy_hook_dispatcher_test COMMAND emmy_hook_dispatcher_test)
+        set_tests_properties(emmy_hook_dispatcher_test PROPERTIES TIMEOUT 20)
+        add_executable(emmy_vm_lifecycle_harness ${emmy_SOURCE_DIR}/tests/vm_lifecycle_harness.cpp)
+        target_link_libraries(emmy_vm_lifecycle_harness PRIVATE emmy_debugger)
+        add_test(NAME emmy_vm_lifecycle_harness COMMAND emmy_vm_lifecycle_harness)
+        set_tests_properties(emmy_vm_lifecycle_harness PROPERTIES TIMEOUT 20)
+    endif()
     add_executable(emmy_vm_registry_test
             ${emmy_SOURCE_DIR}/tests/vm_registry_test.cpp
+            src/api/lua_abi_descriptor.cpp
+            src/api/lua_version.cpp
             src/vm/vm_registry.cpp
             src/vm/host_vm_registry.cpp
     )
@@ -142,6 +195,8 @@ if(EMMY_VM_REGISTRY_TEST)
 
     add_executable(emmy_protocol_v2_test
             ${emmy_SOURCE_DIR}/tests/protocol_v2_test.cpp
+            src/api/lua_abi_descriptor.cpp
+            src/api/lua_version.cpp
             src/proto/protocol_v2.cpp
             src/proto/protocol_session.cpp
             src/transporter/transport_auth.cpp
@@ -153,6 +208,27 @@ if(EMMY_VM_REGISTRY_TEST)
     )
     set_target_properties(emmy_protocol_v2_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
     add_test(NAME emmy_protocol_v2_test COMMAND emmy_protocol_v2_test)
+
+    add_executable(emmy_protocol_session_test
+            ${emmy_SOURCE_DIR}/tests/protocol_session_test.cpp
+            src/proto/protocol_session.cpp
+    )
+    target_include_directories(emmy_protocol_session_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include
+    )
+    set_target_properties(emmy_protocol_session_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME emmy_protocol_session_test COMMAND emmy_protocol_session_test)
+
+    add_executable(emmy_restricted_eval_test
+            ${emmy_SOURCE_DIR}/tests/restricted_eval_test.cpp
+            src/proto/restricted_eval.cpp
+    )
+    target_include_directories(emmy_restricted_eval_test PRIVATE
+            ${emmy_debugger_SOURCE_DIR}/include
+            ${emmy_SOURCE_DIR}/third-party/nlohmann/include
+    )
+    set_target_properties(emmy_restricted_eval_test PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME emmy_restricted_eval_test COMMAND emmy_restricted_eval_test)
 
     add_executable(emmy_transporter_frame_test
             ${emmy_SOURCE_DIR}/tests/transporter_frame_test.cpp
@@ -181,6 +257,12 @@ if(EMMY_VM_REGISTRY_TEST)
     add_test(NAME emmy_debugger_isolation_test COMMAND emmy_debugger_isolation_test)
 
     if(WIN32)
+        add_executable(emmy_injection_shared_memory_test
+                ${emmy_SOURCE_DIR}/tests/injection_shared_memory_test.cpp
+                ${emmy_SOURCE_DIR}/shared/src/shme.cpp)
+        target_include_directories(emmy_injection_shared_memory_test PRIVATE ${emmy_SOURCE_DIR}/shared/include)
+        add_test(NAME emmy_injection_shared_memory_test COMMAND emmy_injection_shared_memory_test)
+        set_tests_properties(emmy_injection_shared_memory_test PROPERTIES TIMEOUT 20)
         add_executable(emmy_hook_manager_test
                 ${emmy_SOURCE_DIR}/tests/hook_manager_test.cpp
                 ${emmy_SOURCE_DIR}/emmy_hook/src/hook_manager.cpp
@@ -227,9 +309,12 @@ if(EMMY_VM_REGISTRY_TEST)
     set_tests_properties(
             emmy_vm_registry_test
             emmy_protocol_v2_test
+            emmy_protocol_session_test
+            emmy_restricted_eval_test
             emmy_transporter_frame_test
             emmy_debugger_isolation_test
             emmy_native_contract_test
             PROPERTIES WORKING_DIRECTORY ${emmy_SOURCE_DIR}
     )
+    target_include_directories(emmy_native_contract_test PRIVATE ${emmy_SOURCE_DIR}/third-party/nlohmann/include)
 endif()

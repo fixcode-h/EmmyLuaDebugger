@@ -2,9 +2,11 @@
 
 #include <unordered_map>
 #include <mutex>
+#include "emmy_debugger/api/lua_version.h"
 
 namespace {
 struct HookEntry {
+	lua_State* mainState = nullptr;
 	lua_Hook hostHook = nullptr;
 	int hostMask = 0;
 	int hostCount = 0;
@@ -22,12 +24,8 @@ int EventMask(const lua_Debug* ar) {
 		case LUA_HOOKCALL: return LUA_MASKCALL;
 		case LUA_HOOKRET:
 			return LUA_MASKRET;
-		#ifdef LUA_HOOKTAILRET
-		case LUA_HOOKTAILRET: return LUA_MASKRET;
-		#endif
-		#ifdef LUA_HOOKTAILCALL
-		case LUA_HOOKTAILCALL: return LUA_MASKCALL;
-		#endif
+		case 4: return luaVersion == LuaVersion::LUA_51 || luaVersion == LuaVersion::LUA_JIT
+			? LUA_MASKRET : LUA_MASKCALL;
 		case LUA_HOOKLINE: return LUA_MASKLINE;
 		case LUA_HOOKCOUNT: return LUA_MASKCOUNT;
 		default: return 0;
@@ -36,11 +34,20 @@ int EventMask(const lua_Debug* ar) {
 
 void Dispatch(lua_State* L, lua_Debug* ar) {
 	HookEntry entry;
+	// Newly created coroutines inherit the VM's native hook. Resolve their
+	// inherited dispatcher through the public main-thread registry entry.
+	auto mainState = GetMainState(L);
 	{
 		std::lock_guard<std::mutex> lock(gHooksMutex);
 		auto it = gHooks.find(L);
+		if (it == gHooks.end() && mainState != nullptr) it = gHooks.find(mainState);
 		if (it == gHooks.end()) return;
 		entry = it->second;
+	}
+	// The main state may already have detached while this coroutine still
+	// carries the inherited dispatcher. Restore it on its own owner thread.
+	if (entry.debuggerHook == nullptr && lua_gethook(L) == Dispatch) {
+		lua_sethook(L, entry.hostHook, entry.hostMask, entry.hostCount);
 	}
 	const int eventMask = EventMask(ar);
 	if (entry.hostHook != nullptr && (entry.hostMask & eventMask) != 0 &&
@@ -61,9 +68,13 @@ bool SetDebuggerHook(lua_State* L, lua_Hook debuggerHook, int debuggerMask,
 	const lua_Hook currentHook = lua_gethook(L);
 	const int currentMask = lua_gethookmask(L);
 	const int currentCount = lua_gethookcount(L);
+	auto mainState = GetMainState(L);
 	{
 		std::lock_guard<std::mutex> lock(gHooksMutex);
 		auto existing = gHooks.find(L);
+		if (existing == gHooks.end() && currentHook == Dispatch && mainState != nullptr) {
+			existing = gHooks.find(mainState);
+		}
 		if (existing != gHooks.end()) {
 			entry = existing->second;
 			if (currentHook != Dispatch) {
@@ -79,6 +90,7 @@ bool SetDebuggerHook(lua_State* L, lua_Hook debuggerHook, int debuggerMask,
 		entry.hostCount = currentCount;
 	}
 	entry.debuggerHook = debuggerHook;
+	entry.mainState = mainState == nullptr ? L : mainState;
 	entry.debuggerMask = debuggerMask;
 	entry.debuggerCount = debuggerCount;
 	{
@@ -95,15 +107,35 @@ bool SetDebuggerHook(lua_State* L, lua_Hook debuggerHook, int debuggerMask,
 bool ClearDebuggerHook(lua_State* L) {
 	if (L == nullptr) return false;
 	HookEntry entry;
+	auto mainState = GetMainState(L);
 	{
 		std::lock_guard<std::mutex> lock(gHooksMutex);
 		auto it = gHooks.find(L);
-		if (it == gHooks.end()) return false;
-		entry = it->second;
-		gHooks.erase(it);
+		if (it != gHooks.end()) {
+			entry = it->second;
+			if (entry.mainState == L) {
+				it->second.debuggerHook = nullptr;
+				it->second.debuggerMask = 0;
+				it->second.debuggerCount = 0;
+			} else {
+				gHooks.erase(it);
+			}
+		} else {
+			auto mainIt = mainState == nullptr ? gHooks.end() : gHooks.find(mainState);
+			if (mainIt == gHooks.end()) return false;
+			entry = mainIt->second;
+		}
 	}
 	if (lua_gethook(L) == Dispatch) {
 		lua_sethook(L, entry.hostHook, entry.hostMask, entry.hostCount);
 	}
 	return true;
+}
+
+void ForgetDebuggerHooks(lua_State* mainState) {
+	std::lock_guard<std::mutex> lock(gHooksMutex);
+	for (auto it = gHooks.begin(); it != gHooks.end();) {
+		if (it->first == mainState || it->second.mainState == mainState) it = gHooks.erase(it);
+		else ++it;
+	}
 }

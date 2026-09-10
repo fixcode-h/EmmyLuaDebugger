@@ -3,6 +3,12 @@
 #include <cstdlib>
 #include <iostream>
 
+#ifdef EMMY_USE_LUA_SOURCE
+extern "C" {
+#include "lua.h"
+}
+#endif
+
 namespace {
 void Require(bool condition, const char* message) {
 	if (!condition) {
@@ -29,8 +35,15 @@ int main() {
 	Require(ValidateLuaAbiDescriptor(generic, unlua, error) &&
 		error.empty(), "generic public descriptor remains usable without private access");
 	const LuaAbiDescriptor detected = DetectLuaAbiDescriptor();
+#ifdef EMMY_USE_LUA_SOURCE
+	Require(detected.luaIdSize == LUA_IDSIZE && detected.layoutHash == "source-build",
+		"source detection uses the actual compiled Lua headers");
+	Require(!ValidateLuaAbiDescriptor(unlua, detected, error),
+		"stock source headers cannot authorize the UnLua private layout");
+#else
 	Require(!detected.privateLayoutSupported && detected.layoutHash.empty() &&
 		detected.release != "5.4.3", "unknown detection cannot masquerade as UnLua 5.4.3");
+#endif
 
 	LuaAbiDescriptor altered = unlua;
 	altered.luaStateSize++;

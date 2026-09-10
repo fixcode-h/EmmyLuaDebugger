@@ -8,3 +8,5 @@
 bool SetDebuggerHook(lua_State* L, lua_Hook debuggerHook, int debuggerMask,
 	int debuggerCount = 0);
 bool ClearDebuggerHook(lua_State* L);
+// Metadata-only cleanup after the host has closed the complete Lua VM.
+void ForgetDebuggerHooks(lua_State* mainState);

@@ -59,6 +59,10 @@ int main() {
 		{"cacheId", 0}
 	};
 	RestrictedEvalLimits parsed;
+	Require(!ValidateRestrictedEvalPayload(nlohmann::json::object(), code, &parsed) && code == "EVALUATION_DENIED",
+		"missing required fields reject without asserting in Debug builds");
+	Require(!ValidateRestrictedEvalPayload({{"policy", "VALUE_PATH"}}, code, &parsed),
+		"missing expression rejects without asserting");
 	Require(ValidateRestrictedEvalPayload(payload, code, &parsed), "valid payload");
 	Require(parsed.maxDepth == 3 && parsed.maxNodes == 10 && parsed.maxBytes == 1024,
 		"payload limits are parsed");

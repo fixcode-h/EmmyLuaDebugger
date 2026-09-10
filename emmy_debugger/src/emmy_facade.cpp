@@ -24,6 +24,7 @@
 #include "emmy_debugger/transporter/pipeline_client_transporter.h"
 #include "emmy_debugger/debugger/emmy_debugger.h"
 #include "emmy_debugger/debugger/emmy_debugger_lib.h"
+#include "emmy_debugger/debugger/hook_dispatcher.h"
 #include "emmy_debugger/transporter/transporter.h"
 #include "emmy_debugger/api/lua_version.h"
 #ifdef _WIN32
@@ -42,6 +43,15 @@ uint64_t CurrentProcessIdValue() {
 #endif
 }
 
+void SetEnvelopeTarget(nlohmann::json& envelope, uint64_t vmId, uint64_t pauseId,
+	const std::string& threadId = std::string(), const std::string& frameId = std::string()) {
+	envelope["target"] = nlohmann::json::object();
+	if (vmId != 0) envelope["target"]["vmId"] = VmProtocolId(vmId);
+	if (pauseId != 0) envelope["target"]["pauseId"] = pauseId;
+	if (!threadId.empty()) envelope["target"]["threadId"] = threadId;
+	if (!frameId.empty()) envelope["target"]["frameId"] = frameId;
+}
+
 } // namespace
 
 EmmyFacade &EmmyFacade::Get() {
@@ -57,15 +67,16 @@ void EmmyFacade::ReadyLuaHook(lua_State *L, lua_Debug *ar) {
 	if (!Get().readyHook) {
 		return;
 	}
-	Get().readyHook = false;
+	// Readiness belongs to the connection. Each VM/coroutine replaces its own
+	// ReadyLuaHook below; the first VM must not consume readiness for the rest.
 
 	auto states = FindAllCoroutine(L);
 
 	for (auto state: states) {
-		lua_sethook(state, HookLua, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
+		SetDebuggerHook(state, HookLua, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
 	}
 
-	lua_sethook(L, HookLua, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
+	SetDebuggerHook(L, HookLua, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
 
 	auto debugger = Get().GetDebugger(L);
 	if (debugger) {
@@ -85,10 +96,16 @@ EmmyFacade::EmmyFacade()
 	  readyHook(false),
 	  StopHook(nullptr),
 	  _authenticated(false),
+	  _debugEventSeq(0),
+	  _breakpointRevision(0),
 	  _protoHandler(this) {
 	_vmRegistry.SetEventSink([this](const VmLifecycleEvent& event) {
 		OnVmLifecycleEvent(event);
 	});
+}
+
+uint64_t EmmyFacade::NextDebugEventSeq() {
+	return _debugEventSeq.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 EmmyFacade::~EmmyFacade() {
@@ -98,6 +115,9 @@ EmmyFacade::~EmmyFacade() {
 extern "C" bool SetupLuaAPI();
 
 bool EmmyFacade::SetupLuaAPI() {
+	if (isAPIReady.load(std::memory_order_acquire)) return true;
+	std::lock_guard<std::mutex> lock(_apiSetupMutex);
+	if (isAPIReady.load(std::memory_order_acquire)) return true;
 	isAPIReady = ::SetupLuaAPI();
 	return isAPIReady;
 }
@@ -122,7 +142,7 @@ bool EmmyFacade::TcpListen(lua_State *L, const std::string &host, int port, std:
 	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto s = std::make_shared<SocketServerTransporter>();
-	transporter = s;
+	std::atomic_store(&transporter, std::static_pointer_cast<Transporter>(s));
 	// s->SetHandler(shared_from_this());
 	const auto suc = s->Listen(host, port, err);
 	if (!suc) {
@@ -134,7 +154,7 @@ bool EmmyFacade::TcpListen(lua_State *L, const std::string &host, int port, std:
 }
 
 bool EmmyFacade::TcpSharedListen(lua_State *L, const std::string &host, int port, std::string &err) {
-	if (transporter == nullptr) {
+	if (std::atomic_load(&transporter) == nullptr) {
 		return TcpListen(L, host, port, err);
 	}
 	if (_emmyDebuggerManager.GetDebugger(L) == nullptr) {
@@ -154,7 +174,7 @@ bool EmmyFacade::TcpConnect(lua_State *L, const std::string &host, int port, std
 	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto c = std::make_shared<SocketClientTransporter>();
-	transporter = c;
+	std::atomic_store(&transporter, std::static_pointer_cast<Transporter>(c));
 	// c->SetHandler(shared_from_this());
 	const auto suc = c->Connect(host, port, err);
 	if (suc) {
@@ -176,7 +196,7 @@ bool EmmyFacade::PipeListen(lua_State *L, const std::string &name, std::string &
 	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto p = std::make_shared<PipelineServerTransporter>();
-	transporter = p;
+	std::atomic_store(&transporter, std::static_pointer_cast<Transporter>(p));
 	// p->SetHandler(shared_from_this());
 	const auto suc = p->pipe(name, err);
 	return suc;
@@ -191,7 +211,7 @@ bool EmmyFacade::PipeConnect(lua_State *L, const std::string &name, std::string 
 	RegisterFallbackLuaVm(L, "EMMY_CORE");
 
 	const auto p = std::make_shared<PipelineClientTransporter>();
-	transporter = p;
+	std::atomic_store(&transporter, std::static_pointer_cast<Transporter>(p));
 	// p->SetHandler(shared_from_this());
 	const auto suc = p->Connect(name, err);
 	if (suc) {
@@ -201,6 +221,7 @@ bool EmmyFacade::PipeConnect(lua_State *L, const std::string &name, std::string 
 }
 
 void EmmyFacade::WaitIDE(bool force, int timeout) {
+	const auto transporter = std::atomic_load(&this->transporter);
 	if (transporter != nullptr
 	    && (transporter->IsServerMode() || force)
 	    && !isWaitingForIDE
@@ -214,7 +235,7 @@ void EmmyFacade::WaitIDE(bool force, int timeout) {
 			waitIDECV.wait_for(lock, std::chrono::milliseconds(timeout));
 #endif
 		} else {
-			EMMY_COND_WAIT(waitIDECV, lock, [this] { return isIDEReady; });
+			EMMY_COND_WAIT(waitIDECV, lock, [this] { return isIDEReady.load(); });
 		}
 		isWaitingForIDE = false;
 	}
@@ -234,6 +255,7 @@ int EmmyFacade::OnConnect(bool suc) {
 	if (suc) {
 		_transportAuth.BeginEpoch(_protocolSession.ConnectionEpoch());
 		_authenticated.store(false, std::memory_order_release);
+		_breakpointRevision.store(0, std::memory_order_release);
 	} else {
 		_transportAuth.ClearAuthenticatedEpoch();
 		_authenticated.store(false, std::memory_order_release);
@@ -242,6 +264,7 @@ int EmmyFacade::OnConnect(bool suc) {
 }
 
 int EmmyFacade::OnDisconnect() {
+	readyHook = false;
 	isIDEReady = false;
 	isWaitingForIDE = false;
 	_protocolSession.OnDisconnect();
@@ -262,12 +285,13 @@ void EmmyFacade::Destroy() {
 	OnDisconnect();
 	if (StopHook) {
 		StopHook();
-		StopHook = nullptr;
+		// Retain the idempotent callback so a quiescence timeout can be retried
+		// during a later bootstrap instead of losing ownership of live hooks.
 	}
 
-	if (transporter) {
-		transporter->Stop();
-		transporter = nullptr;
+	const auto previousTransport = std::atomic_exchange(&transporter, std::shared_ptr<Transporter>());
+	if (previousTransport) {
+		previousTransport->Stop();
 	}
 }
 
@@ -310,6 +334,7 @@ void EmmyFacade::InitReq(InitParams & params) {
 }
 
 bool EmmyFacade::AuthenticateInit(const std::string& token) {
+	const auto transporter = std::atomic_load(&this->transporter);
 	if (!_transportAuth.VerifyForEpoch(token, _protocolSession.ConnectionEpoch())) {
 		nlohmann::json error = nlohmann::json::object();
 		error["code"] = "NOT_AUTHORIZED";
@@ -342,15 +367,25 @@ bool EmmyFacade::IsAuthenticationRequired() const {
 }
 
 void EmmyFacade::ReadyReq() {
-	_protocolSession.MarkReady();
+	{
+		std::lock_guard<std::mutex> lock(_v2EventMutex);
+		const VmRegistrySnapshot snapshot = _vmRegistry.SnapshotWithEventSeq();
+		SendReadyResponse(snapshot.eventSeq);
+		SendV2Document(MakeVmSnapshotEnvelope(
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
+			snapshot.records, snapshot.eventSeq));
+		for (const auto& pending : _pendingV2Events) {
+			if (pending.event.eventSeq > snapshot.eventSeq)
+				SendV2Document(MakeVmLifecycleEnvelope(_protocolSession.AgentSessionId(),
+					_protocolSession.ConnectionEpoch(), pending.event));
+		}
+		_pendingV2Events.clear();
+		// Publish readiness only after the snapshot fence has entered the same
+		// transport queue. Lua callbacks can now publish pause snapshots safely.
+		_protocolSession.MarkReady();
+	}
 	isIDEReady = true;
 	EMMY_COND_NOTIFY_ALL(waitIDECV);
-	const VmRegistrySnapshot snapshot = _vmRegistry.SnapshotWithEventSeq();
-	SendReadyResponse(snapshot.eventSeq);
-	SendV2Document(MakeVmSnapshotEnvelope(
-		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
-		snapshot.records, snapshot.eventSeq));
-	FlushPendingV2Events(snapshot.eventSeq);
 }
 
 uint64_t EmmyFacade::RegisterLuaVm(lua_State* L, const VmMetadata& metadata) {
@@ -362,15 +397,57 @@ bool EmmyFacade::NotifyLuaVmReady(uint64_t registrationId) {
 }
 
 bool EmmyFacade::BeginLuaVmClose(uint64_t registrationId, const std::string& reason) {
-	return _hostVmRegistry.BeginClose(registrationId, reason);
+	std::lock_guard<std::mutex> lock(_sourceLifecycleMutex);
+	if (!_hostVmRegistry.BeginClose(registrationId, reason)) return false;
+	// Wake a paused Lua owner and reject queued work. The host remains
+	// responsible for joining that owner before actually invoking lua_close.
+	auto debugger = _emmyDebuggerManager.GetDebuggerByVmId(registrationId);
+	if (debugger) debugger->Stop();
+	_emmyDebuggerManager.ClearHitDebugger(registrationId);
+	return true;
 }
 
 bool EmmyFacade::EndLuaVmClose(uint64_t registrationId) {
-	return _hostVmRegistry.EndClose(registrationId);
+	std::lock_guard<std::mutex> lock(_sourceLifecycleMutex);
+	const auto record = _hostVmRegistry.Find(registrationId);
+	const bool closed = _hostVmRegistry.EndClose(registrationId);
+	if (closed) _sourceRegistry.Invalidate(registrationId);
+	if (closed && record) ForgetDebuggerHooks(record->mainState);
+	if (closed) _emmyDebuggerManager.RemoveDebuggerByVmId(registrationId);
+	return closed;
+}
+
+bool EmmyFacade::ResetLuaVmContext(uint64_t registrationId, const std::string& reason) {
+	std::lock_guard<std::mutex> lock(_sourceLifecycleMutex);
+	// Invalidate debugger-owned references before the registry emits the reset
+	// event. This ordering prevents an IDE/CLI consumer from observing the new
+	// source epoch while the old pause snapshot is still locally addressable.
+	auto debugger = _emmyDebuggerManager.GetDebuggerByVmId(registrationId);
+	if (debugger) {
+		debugger->ResetContext();
+		_emmyDebuggerManager.ClearHitDebugger(registrationId);
+	}
+	const bool reset = _hostVmRegistry.ResetContext(registrationId, reason);
+	if (reset) _sourceRegistry.Invalidate(registrationId);
+	if (reset && debugger) {
+		auto record = _vmRegistry.Find(registrationId);
+		if (record) debugger->SetContextIdentity(record->contextGeneration, record->sourceEpoch);
+	}
+	return reset;
 }
 
 bool EmmyFacade::ReleaseLuaVmRegistration(uint64_t registrationId) {
 	return _hostVmRegistry.Release(registrationId);
+}
+
+bool EmmyFacade::RegisterLuaSource(uint64_t registrationId, HostSourceIdentity identity) {
+	std::lock_guard<std::mutex> lock(_sourceLifecycleMutex);
+	const auto record = _hostVmRegistry.Find(registrationId);
+	if (!record || record->sourceEpoch != identity.sourceEpoch ||
+		record->state == VmLifecycleState::Closing || record->state == VmLifecycleState::Closed ||
+		record->state == VmLifecycleState::Lost || record->state == VmLifecycleState::Error) return false;
+	identity.vmId = record->id;
+	return _sourceRegistry.Register(identity);
 }
 
 bool EmmyFacade::SetLuaVmDisplayName(uint64_t registrationId, const std::string& displayName) {
@@ -397,6 +474,11 @@ uint64_t EmmyFacade::RegisterFallbackLuaVm(lua_State* L, const std::string& disc
 	const uint64_t registrationId = RegisterLuaVm(mainState, metadata);
 	if (registrationId != 0) {
 		_emmyDebuggerManager.BindVmId(mainState, registrationId);
+		auto record = _hostVmRegistry.FindByState(mainState);
+		auto debugger = _emmyDebuggerManager.GetDebuggerByVmId(registrationId);
+		if (record && debugger) {
+			debugger->SetContextIdentity(record->contextGeneration, record->sourceEpoch);
+		}
 		NotifyLuaVmReady(registrationId);
 	}
 	return registrationId;
@@ -404,6 +486,26 @@ uint64_t EmmyFacade::RegisterFallbackLuaVm(lua_State* L, const std::string& disc
 
 bool EmmyFacade::ReconcileHostLuaVms() {
 	return _hostVmRegistry.ReconcileExistingVms(_vmRegistry);
+}
+
+bool EmmyFacade::ValidateLuaVmAccess(lua_State* L) {
+	if (L == nullptr) return false;
+	auto validate = [this](const std::shared_ptr<const VmRecord>& record) {
+		if (!record) return true;
+		if (!record->metadata.abiCompatible || record->state == VmLifecycleState::Error ||
+			record->state == VmLifecycleState::Closing || record->state == VmLifecycleState::Closed ||
+			record->state == VmLifecycleState::Lost) return false;
+		if (!record->metadata.hasAbiDescriptor) return true;
+		std::string error;
+		if (ValidateLuaAbiDescriptorForPublicApi(record->metadata.abi, DetectLuaAbiDescriptor(), error)) return true;
+		_hostVmRegistry.RejectAbi(record->id, error);
+		return false;
+	};
+	// A directly registered VM must be checked before even resolving its main
+	// thread through Lua's public registry API.
+	if (!validate(_hostVmRegistry.FindByState(L))) return false;
+	auto mainState = GetMainState(L);
+	return mainState == nullptr || mainState == L || validate(_hostVmRegistry.FindByState(mainState));
 }
 
 NativeVmRegistry& EmmyFacade::GetVmRegistry() {
@@ -414,7 +516,34 @@ HostVmRegistry& EmmyFacade::GetHostVmRegistry() {
 	return _hostVmRegistry;
 }
 
+HostValueProviderRegistry& EmmyFacade::GetHostValueProviderRegistry() {
+	return _hostValueProviderRegistry;
+}
+
 void EmmyFacade::OnReceiveMessage(nlohmann::json document) {
+	// Authentication is an admission check. Frames other than InitReq do not
+	// enter ProtoHandler until the current transport epoch is authenticated.
+	if (_transportAuth.IsRequired() && !_authenticated.load(std::memory_order_acquire)) {
+		const bool isInit = document["cmd"].is_number_integer() &&
+			document["cmd"].get<int>() == static_cast<int>(MessageCMD::InitReq);
+		if (!isInit) {
+			if (document["cmd"].is_number_integer() &&
+				document["cmd"].get<int>() == static_cast<int>(MessageCMD::EnvelopeV2)) {
+				nlohmann::json error = nlohmann::json::object();
+				error["code"] = "NOT_AUTHORIZED";
+				error["message"] = "Emmy Agent authentication is required before requests";
+				error["retryable"] = false;
+				const std::string type = document["type"].is_string()
+					? document["type"].get<std::string>() : "unknown";
+				const std::string requestId = document["requestId"].is_string()
+					? document["requestId"].get<std::string>() : std::string();
+				SendV2Document(MakeV2Envelope("response", type,
+					_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
+					requestId, 0, nlohmann::json(), false, error));
+			}
+			return;
+		}
+	}
 	_protoHandler.OnDispatch(document);
 }
 
@@ -441,6 +570,35 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		? document["requestId"].get<std::string>() : std::string();
 	const uint64_t incomingEpoch = document["connectionEpoch"].is_number_unsigned()
 		? document["connectionEpoch"].get<uint64_t>() : 0;
+	const std::string incomingSession = document["agentSessionId"].is_string()
+		? document["agentSessionId"].get<std::string>() : std::string();
+	if (kind == "request") {
+		std::string identityError;
+		if (!ValidateV2RequestIdentity(document, _protocolSession.AgentSessionId(),
+			_protocolSession.ConnectionEpoch(), identityError)) {
+			nlohmann::json error = nlohmann::json::object();
+			error["code"] = identityError.empty() ? "INVALID_V2_IDENTITY" : identityError;
+			error["message"] = "v2 request identity is invalid";
+			error["retryable"] = identityError == "STALE_AGENT_SESSION" ||
+				identityError == "STALE_CONNECTION_EPOCH";
+			const nlohmann::json response = MakeV2Envelope(
+				"response", type.empty() ? "unknown" : type,
+				_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(),
+				requestId, 0, nlohmann::json(), false, error);
+			SendV2Document(response);
+			return;
+		}
+	}
+	if (incomingSession.empty() || incomingSession != _protocolSession.AgentSessionId()) {
+		nlohmann::json error = nlohmann::json::object();
+		error["code"] = "STALE_AGENT_SESSION";
+		error["message"] = "request belongs to a different Agent session";
+		error["retryable"] = true;
+		SendV2Document(MakeV2Envelope("response", type.empty() ? "unknown" : type,
+			_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), requestId,
+			0, nlohmann::json(), false, error));
+		return;
+	}
 	if (_transportAuth.IsRequired() && !_authenticated.load(std::memory_order_acquire)) {
 		nlohmann::json error = nlohmann::json::object();
 		error["code"] = "NOT_AUTHORIZED";
@@ -465,6 +623,38 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 	if (kind == "request" && !BeginV2Request(document, requestId, operationHash)) {
 		return;
 	}
+	V2DebugTarget debugTarget;
+	if (kind == "request" && (type == "debug.action" || type == "debug.eval")) {
+		std::string errorCode;
+		if (!ParseV2DebugTarget(document, type == "debug.eval", debugTarget, errorCode)) {
+			const nlohmann::json error = {{"code", errorCode},
+				{"message", "VM, pause or context identity is invalid"}, {"retryable", false}};
+			const auto response = MakeV2Envelope("response", type, _protocolSession.AgentSessionId(),
+				incomingEpoch, requestId, 0, nlohmann::json(), false, error);
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
+			return;
+		}
+	}
+
+	if (kind == "request" && type == "request.cancel") {
+		const auto& payload = document["payload"];
+		const std::string cancelledId = payload.is_object() && payload.contains("requestId") && payload["requestId"].is_string()
+			? payload["requestId"].get<std::string>() : std::string();
+		const auto cancelled = cancelledId != requestId
+			? _protocolSession.CancelRequest(cancelledId, incomingEpoch)
+			: ProtocolSession::CancelDisposition::NotFound;
+		const bool ok = cancelled == ProtocolSession::CancelDisposition::Cancelled;
+		nlohmann::json error;
+		if (!ok) error = {{"code", cancelled == ProtocolSession::CancelDisposition::Unsupported
+			? "CANCEL_UNSUPPORTED" : "REQUEST_NOT_FOUND"},
+			{"message", "only queued evaluation can be cancelled; running Lua is never interrupted"}, {"retryable", false}};
+		const auto response = MakeV2Envelope("response", type, _protocolSession.AgentSessionId(), incomingEpoch,
+			requestId, 0, {{"cancelled", ok}}, ok, error);
+		CompleteV2Request(requestId, operationHash, response);
+		SendV2Document(response);
+		return;
+	}
 
 	if (kind == "request" && type == "vm.snapshot") {
 		const VmRegistrySnapshot snapshot = _vmRegistry.SnapshotWithEventSeq();
@@ -476,35 +666,93 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		return;
 	}
 
+	if (kind == "request" && type == "debug.breakpoints.replace") {
+		const nlohmann::json& payload = document["payload"];
+		const uint64_t revision = payload.is_object() && payload.contains("revision") && payload["revision"].is_number_unsigned()
+			? payload["revision"].get<uint64_t>() : 0;
+		if (revision == 0 || !payload["breakpoints"].is_array() || payload["breakpoints"].size() > 4096) {
+			nlohmann::json error = nlohmann::json::object();
+			error["code"] = "INVALID_BREAKPOINT_SNAPSHOT";
+			error["message"] = "revision and a bounded breakpoints array are required";
+			error["retryable"] = false;
+			const nlohmann::json response = MakeV2Envelope(
+				"response", type, _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
+			return;
+		}
+		const uint64_t currentRevision = _breakpointRevision.load(std::memory_order_acquire);
+		if (revision < currentRevision) {
+			nlohmann::json error = nlohmann::json::object();
+			error["code"] = "STALE_BREAKPOINT_REVISION";
+			error["message"] = "breakpoint snapshot revision is older than the active revision";
+			error["retryable"] = true;
+			const nlohmann::json response = MakeV2Envelope(
+				"response", type, _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
+			return;
+		}
+
+		std::vector<std::shared_ptr<BreakPoint>> snapshot;
+		for (nlohmann::json::const_iterator it = payload["breakpoints"].begin();
+				it != payload["breakpoints"].end(); ++it) {
+			if (!it->is_object()) continue;
+			std::shared_ptr<BreakPoint> breakpoint(new BreakPoint());
+			breakpoint->Deserialize(*it);
+			snapshot.push_back(breakpoint);
+		}
+		_emmyDebuggerManager.ReplaceBreakpoints(snapshot);
+		_breakpointRevision.store(revision, std::memory_order_release);
+		nlohmann::json acceptedPayload = nlohmann::json::object();
+		acceptedPayload["accepted"] = true;
+		acceptedPayload["revision"] = revision;
+		acceptedPayload["count"] = snapshot.size();
+		const nlohmann::json response = MakeV2Envelope(
+			"response", type, _protocolSession.AgentSessionId(),
+			_protocolSession.ConnectionEpoch(), requestId, 0, acceptedPayload);
+		CompleteV2Request(requestId, operationHash, response);
+		SendV2Document(response);
+		return;
+	}
+
 	if (kind == "request" && type == "debug.action") {
-		const uint64_t vmId = ParseVmProtocolId(document["target"]["vmId"]);
-		const uint64_t pauseId = document["target"]["pauseId"].is_number_unsigned()
-			? document["target"]["pauseId"].get<uint64_t>() : 0;
+		const uint64_t vmId = debugTarget.vmId;
+		const uint64_t pauseId = debugTarget.pauseId;
+		const std::string& threadId = debugTarget.threadId;
 		const int actionValue = document["payload"]["action"].is_number_integer()
 			? document["payload"]["action"].get<int>() : -1;
 		const bool validAction = actionValue >= static_cast<int>(DebugAction::Break) &&
 			actionValue <= static_cast<int>(DebugAction::Stop);
-		const bool accepted = validAction && vmId != 0 &&
-			_emmyDebuggerManager.DoActionForVm(vmId, static_cast<DebugAction>(actionValue), pauseId);
+		const EmmyDebuggerManager::RouteResult route = validAction
+			? _emmyDebuggerManager.RouteAction(vmId, static_cast<DebugAction>(actionValue), pauseId, threadId,
+				debugTarget.contextGeneration, debugTarget.sourceEpoch)
+			: EmmyDebuggerManager::RouteResult{false, "INVALID_ACTION"};
+		const bool accepted = route.ok;
 		if (accepted) {
+			// This response acknowledges queue admission. Only the Lua owner
+			// publishes RUNNING/debug.resumed after applying the action.
 			nlohmann::json payload = nlohmann::json::object();
 			payload["accepted"] = true;
 			payload["vmId"] = VmProtocolId(vmId);
 			if (pauseId != 0) payload["pauseId"] = pauseId;
-			const nlohmann::json response = MakeV2Envelope(
+			nlohmann::json response = MakeV2Envelope(
 				"response", "debug.action", _protocolSession.AgentSessionId(),
 				_protocolSession.ConnectionEpoch(), requestId, 0, payload);
+			SetEnvelopeTarget(response, vmId, pauseId, threadId);
 			CompleteV2Request(requestId, operationHash, response);
 			SendV2Document(response);
 		} else {
 			nlohmann::json error = nlohmann::json::object();
-			error["code"] = vmId == 0 || !_emmyDebuggerManager.GetDebuggerByVmId(vmId)
-				? "VM_NOT_FOUND" : "STALE_PAUSE_REFERENCE";
+			error["code"] = route.errorCode == nullptr ? "ACTION_REJECTED" : route.errorCode;
 			error["message"] = "The requested VM action was rejected";
 			error["retryable"] = false;
-			const nlohmann::json response = MakeV2Envelope(
+			nlohmann::json response = MakeV2Envelope(
 				"response", "debug.action", _protocolSession.AgentSessionId(),
 				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			SetEnvelopeTarget(response, vmId, pauseId, threadId);
 			CompleteV2Request(requestId, operationHash, response);
 			SendV2Document(response);
 		}
@@ -512,30 +760,66 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 	}
 
 	if (kind == "request" && type == "debug.eval") {
-		const uint64_t vmId = ParseVmProtocolId(document["target"]["vmId"]);
-		const uint64_t pauseId = document["target"]["pauseId"].is_number_unsigned()
-			? document["target"]["pauseId"].get<uint64_t>() : 0;
+		const uint64_t vmId = debugTarget.vmId;
+		const uint64_t pauseId = debugTarget.pauseId;
+		const nlohmann::json& payload = document["payload"];
+		RestrictedEvalLimits evalLimits;
+		std::string evalValidationError;
+		if (!ValidateRestrictedEvalPayload(payload, evalValidationError, &evalLimits)) {
+			nlohmann::json error = nlohmann::json::object();
+			error["code"] = evalValidationError.empty() ? "EVALUATION_DENIED" : evalValidationError;
+			error["message"] = "restricted VALUE_PATH evaluation was rejected";
+			error["retryable"] = false;
+			nlohmann::json response = MakeV2Envelope(
+				"response", "debug.eval", _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			SetEnvelopeTarget(response, vmId, pauseId,
+				document["target"]["threadId"].is_string()
+					? document["target"]["threadId"].get<std::string>() : std::string(),
+				document["target"]["frameId"].is_string()
+					? document["target"]["frameId"].get<std::string>() : std::string());
+			CompleteV2Request(requestId, operationHash, response);
+			SendV2Document(response);
+			return;
+		}
 		std::shared_ptr<EvalContext> context(new EvalContext());
 		context->requestId = requestId;
 		context->operationHash = operationHash;
 		context->vmId = vmId;
 		context->pauseId = pauseId;
-		const nlohmann::json& payload = document["payload"];
+		context->connectionEpoch = incomingEpoch;
+		context->contextGeneration = debugTarget.contextGeneration;
+		context->sourceEpoch = debugTarget.sourceEpoch;
+		if (document["target"]["threadId"].is_string()) {
+			context->threadId = document["target"]["threadId"].get<std::string>();
+		}
+		if (document["target"]["frameId"].is_string()) {
+			context->frameId = document["target"]["frameId"].get<std::string>();
+		}
+		context->policy = "VALUE_PATH";
+		if (payload.contains("sourceIdentity") && payload["sourceIdentity"].is_object()) {
+			const auto& source = payload["sourceIdentity"];
+			if (source.contains("canonicalPath") && source["canonicalPath"].is_string()) context->sourceCanonicalPath = source["canonicalPath"].get<std::string>();
+			if (source.contains("sourceHash") && source["sourceHash"].is_string()) context->sourceHash = source["sourceHash"].get<std::string>();
+		}
+		context->depth = evalLimits.maxDepth;
+		context->maxNodes = evalLimits.maxNodes;
+		context->maxBytes = evalLimits.maxBytes;
 		if (payload["expr"].is_string()) context->expr = payload["expr"].get<std::string>();
-		if (payload["stackLevel"].is_number_integer()) context->stackLevel = payload["stackLevel"].get<int>();
-		if (payload["depth"].is_number_integer()) context->depth = payload["depth"].get<int>();
-		if (payload["cacheId"].is_number_integer()) context->cacheId = payload["cacheId"].get<int>();
+		if (payload.contains("stackLevel") && payload["stackLevel"].is_number_integer()) context->stackLevel = payload["stackLevel"].get<int>();
+		// Bounds and defaults come exclusively from the payload validator.
 
-		const bool accepted = vmId != 0 && pauseId != 0 && _emmyDebuggerManager.EvalForVm(vmId, context);
+		const EmmyDebuggerManager::RouteResult route = _emmyDebuggerManager.RouteEval(vmId, context);
+		const bool accepted = route.ok;
 		if (!accepted) {
 			nlohmann::json error = nlohmann::json::object();
-			error["code"] = vmId == 0 || !_emmyDebuggerManager.GetDebuggerByVmId(vmId)
-				? "VM_NOT_FOUND" : "STALE_PAUSE_REFERENCE";
+			error["code"] = route.errorCode == nullptr ? "EVAL_REJECTED" : route.errorCode;
 			error["message"] = "The requested evaluation target is not active";
 			error["retryable"] = false;
-			const nlohmann::json response = MakeV2Envelope(
+			nlohmann::json response = MakeV2Envelope(
 				"response", "debug.eval", _protocolSession.AgentSessionId(),
 				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+			SetEnvelopeTarget(response, vmId, pauseId, context->threadId, context->frameId);
 			CompleteV2Request(requestId, operationHash, response);
 			SendV2Document(response);
 		}
@@ -548,7 +832,8 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 		payload["protocolVersion"] = 2;
 		payload["processId"] = CurrentProcessIdValue();
 		payload["capabilities"] = nlohmann::json::array({
-			"vm.lifecycle", "vm.snapshot", "debug.legacy-v1"
+			"vm.lifecycle", "vm.snapshot", "debug.paused", "debug.resumed",
+			"pause.thread-only", "debug.breakpoints.replace", "debug.legacy-v1"
 		});
 		const nlohmann::json response = MakeV2Envelope(
 			"response", "agent.describe", _protocolSession.AgentSessionId(),
@@ -565,9 +850,11 @@ void EmmyFacade::OnV2Envelope(nlohmann::json document) {
 	error["code"] = "CAPABILITY_UNSUPPORTED";
 	error["message"] = "Unsupported Emmy v2 request";
 	error["retryable"] = false;
-	SendV2Document(MakeV2Envelope(
+	const nlohmann::json response = MakeV2Envelope(
 		"response", type.empty() ? "unknown" : type, _protocolSession.AgentSessionId(),
-		_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+		_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error);
+	CompleteV2Request(requestId, operationHash, response);
+	SendV2Document(response);
 }
 
 bool EmmyFacade::BeginV2Request(const nlohmann::json& document,
@@ -582,10 +869,21 @@ bool EmmyFacade::BeginV2Request(const nlohmann::json& document,
 			_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
 		return false;
 	}
-	operationHash = document.dump();
+	operationHash = CanonicalV2Json(document);
+	uint64_t timeoutMillis = 5000;
+	if (document.contains("deadlineMillis")) {
+		if (!document["deadlineMillis"].is_number_unsigned() ||
+			(timeoutMillis = document["deadlineMillis"].get<uint64_t>()) == 0 || timeoutMillis > 30000) {
+			const nlohmann::json error = {{"code", "INVALID_DEADLINE"},
+				{"message", "deadlineMillis must be a relative duration between 1 and 30000"}, {"retryable", false}};
+			SendV2Document(MakeV2Envelope("response", "request", _protocolSession.AgentSessionId(),
+				_protocolSession.ConnectionEpoch(), requestId, 0, nlohmann::json(), false, error));
+			return false;
+		}
+	}
 	const ProtocolSession::RequestDisposition disposition = _protocolSession.BeginRequest(
 		requestId, operationHash, document["connectionEpoch"].is_number_unsigned()
-			? document["connectionEpoch"].get<uint64_t>() : 0);
+			? document["connectionEpoch"].get<uint64_t>() : 0, timeoutMillis);
 	if (disposition == ProtocolSession::RequestDisposition::New) {
 		return true;
 	}
@@ -605,10 +903,12 @@ bool EmmyFacade::BeginV2Request(const nlohmann::json& document,
 	}
 	nlohmann::json error = nlohmann::json::object();
 	error["code"] = disposition == ProtocolSession::RequestDisposition::Conflict
-		? "REQUEST_ID_REUSE" : "STALE_CONNECTION_EPOCH";
+		? "REQUEST_ID_REUSE" : disposition == ProtocolSession::RequestDisposition::Busy
+		? "RATE_LIMITED" : "STALE_CONNECTION_EPOCH";
 	error["message"] = disposition == ProtocolSession::RequestDisposition::Conflict
 		? "requestId was reused for a different operation" : "request is not valid for this connection";
-	error["retryable"] = disposition == ProtocolSession::RequestDisposition::StaleEpoch;
+	error["retryable"] = disposition == ProtocolSession::RequestDisposition::StaleEpoch ||
+		disposition == ProtocolSession::RequestDisposition::Busy;
 	SendV2Document(MakeV2Envelope("response", document["type"].is_string()
 		? document["type"].get<std::string>() : "request",
 		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), requestId,
@@ -619,8 +919,11 @@ bool EmmyFacade::BeginV2Request(const nlohmann::json& document,
 void EmmyFacade::CompleteV2Request(const std::string& requestId,
 	const std::string& operationHash,
 	const nlohmann::json& response) {
+	const uint64_t responseEpoch = response["connectionEpoch"].is_number_unsigned()
+		? response["connectionEpoch"].get<uint64_t>() : 0;
+	if (!_protocolSession.AcceptIncomingEpoch(responseEpoch, false)) return;
 	_protocolSession.CompleteRequest(requestId, operationHash, response.dump(),
-		_protocolSession.ConnectionEpoch());
+		responseEpoch);
 }
 
 bool EmmyFacade::ReplayV2Request(const std::string& requestId,
@@ -638,16 +941,29 @@ bool EmmyFacade::ReplayV2Request(const std::string& requestId,
 }
 
 void EmmyFacade::OnVmLifecycleEvent(const VmLifecycleEvent& event) {
+	const auto transporter = std::atomic_load(&this->transporter);
+	std::lock_guard<std::mutex> lock(_v2EventMutex);
 	const nlohmann::json document = MakeVmLifecycleEnvelope(
 		_protocolSession.AgentSessionId(), _protocolSession.ConnectionEpoch(), event);
 	if (_protocolSession.IsReady() && transporter != nullptr && transporter->IsConnected()) {
 		SendV2Document(document);
 	} else {
-		QueueV2Event(event);
+		if (_pendingV2Events.size() >= 256) _pendingV2Events.pop_front();
+		_pendingV2Events.push_back(PendingV2Event{event});
 	}
 }
 
 void EmmyFacade::SendV2Document(const nlohmann::json& document) {
+	const auto transporter = std::atomic_load(&this->transporter);
+	if (document["cmd"].is_number_integer() &&
+		document["cmd"].get<int>() == static_cast<int>(MessageCMD::EnvelopeV2)) {
+		const std::string session = document["agentSessionId"].is_string()
+			? document["agentSessionId"].get<std::string>() : std::string();
+		const uint64_t epoch = document["connectionEpoch"].is_number_unsigned()
+			? document["connectionEpoch"].get<uint64_t>() : 0;
+		if (session != _protocolSession.AgentSessionId() ||
+			!_protocolSession.AcceptIncomingEpoch(epoch, false)) return;
+	}
 	if (transporter != nullptr && transporter->IsConnected()) {
 		transporter->Send(static_cast<int>(MessageCMD::EnvelopeV2), document);
 	}
@@ -685,6 +1001,7 @@ void EmmyFacade::FlushPendingV2Events(uint64_t snapshotEventSeq) {
 }
 
 void EmmyFacade::SendInitResponse() {
+	const auto transporter = std::atomic_load(&this->transporter);
 	nlohmann::json response = nlohmann::json::object();
 	response["cmd"] = static_cast<int>(MessageCMD::InitRsp);
 	response["version"] = "2";
@@ -693,7 +1010,8 @@ void EmmyFacade::SendInitResponse() {
 	response["connectionEpoch"] = _protocolSession.ConnectionEpoch();
 	response["processId"] = CurrentProcessIdValue();
 	response["capabilities"] = nlohmann::json::array({
-		"vm.lifecycle", "vm.snapshot", "debug.legacy-v1"
+		"vm.lifecycle", "vm.snapshot", "debug.paused", "debug.resumed",
+		"pause.thread-only", "debug.breakpoints.replace", "debug.legacy-v1"
 	});
 	if (transporter != nullptr) {
 		transporter->Send(static_cast<int>(MessageCMD::InitRsp), response);
@@ -701,6 +1019,7 @@ void EmmyFacade::SendInitResponse() {
 }
 
 void EmmyFacade::SendReadyResponse(uint64_t snapshotEventSeq) {
+	const auto transporter = std::atomic_load(&this->transporter);
 	nlohmann::json response = nlohmann::json::object();
 	response["cmd"] = static_cast<int>(MessageCMD::ReadyRsp);
 	response["protocolVersion"] = 2;
@@ -713,50 +1032,119 @@ void EmmyFacade::SendReadyResponse(uint64_t snapshotEventSeq) {
 }
 
 bool EmmyFacade::OnBreak(std::shared_ptr<Debugger> debugger) {
-	if (!debugger || !transporter || !transporter->IsConnected()) {
+	std::lock_guard<std::mutex> eventLock(_debugEventMutex);
+	const auto transporter = std::atomic_load(&this->transporter);
+	if (!debugger || !transporter || !transporter->IsConnected() || !_protocolSession.IsReady()) {
 		return false;
 	}
 	std::vector<Stack> stacks;
+	bool stacksTruncated = false;
 
+	if (!debugger->GetStacks(stacks, 128, &stacksTruncated, true)) {
+		SendLog(LogType::Warning, "暂停时无法读取 Lua 栈（VM=%llu）",
+			static_cast<unsigned long long>(debugger->GetVmId()));
+		return false;
+	}
 	_emmyDebuggerManager.SetHitDebugger(debugger);
-
-	debugger->GetStacks(stacks);
+	if (debugger->GetVmId() != 0) {
+		// Publish PAUSED only after the snapshot is complete. A failed capture
+		// must leave the VM controllable in its previous state.
+		auto record = _vmRegistry.Find(debugger->GetVmId());
+		if (record && (record->state == VmLifecycleState::Running ||
+				record->state == VmLifecycleState::Ready)) {
+			_vmRegistry.SetState(debugger->GetVmId(), VmLifecycleState::Paused, "breakpoint");
+		}
+	}
 
 	auto obj = nlohmann::json::object();
 	obj["cmd"] = static_cast<int>(MessageCMD::BreakNotify);
 	obj["stacks"] = JsonProtocol::SerializeArray(stacks);
+	if (stacksTruncated) obj["stacksTruncated"] = true;
 	if (debugger->GetVmId() != 0) {
 		obj["vmId"] = VmProtocolId(debugger->GetVmId());
 	}
 	if (debugger->GetPauseId() != 0) {
 		obj["pauseId"] = debugger->GetPauseId();
 	}
+	obj["threadId"] = debugger->GetPauseThreadId();
+	obj["pauseScope"] = debugger->GetPauseScope() == PauseScope::Thread ? "THREAD" : "VM";
+	obj["consistency"] = debugger->GetPauseConsistency();
+	obj["pauseReason"] = debugger->GetPauseReason();
+	obj["reasons"] = debugger->GetPauseReasons();
 
 	transporter->Send(int(MessageCMD::BreakNotify), obj);
+
+	nlohmann::json payload = nlohmann::json::object();
+	payload["pauseId"] = debugger->GetPauseId();
+	payload["threadId"] = debugger->GetPauseThreadId();
+	payload["pauseScope"] = debugger->GetPauseScope() == PauseScope::Thread ? "THREAD" : "VM";
+	payload["consistency"] = debugger->GetPauseConsistency();
+	payload["reason"] = debugger->GetPauseReason();
+	payload["reasons"] = debugger->GetPauseReasons();
+	payload["stacks"] = JsonProtocol::SerializeArray(stacks);
+	nlohmann::json paused = MakeV2Envelope(
+		"event", "debug.paused", _protocolSession.AgentSessionId(),
+		_protocolSession.ConnectionEpoch(), std::string(), NextDebugEventSeq(), payload);
+	paused["contextGeneration"] = debugger->GetContextGeneration();
+	paused["sourceEpoch"] = debugger->GetSourceEpoch();
+	paused["target"] = nlohmann::json::object();
+	if (debugger->GetVmId() != 0) paused["target"]["vmId"] = VmProtocolId(debugger->GetVmId());
+	paused["target"]["threadId"] = debugger->GetPauseThreadId();
+	paused["target"]["pauseId"] = debugger->GetPauseId();
+	SendV2Document(paused);
 
 	return true;
 }
 
+void EmmyFacade::OnResume(uint64_t vmId, uint64_t pauseId, const std::string& threadId,
+	uint64_t contextGeneration, uint64_t sourceEpoch) {
+	if (pauseId == 0 || !_protocolSession.IsReady()) return;
+	std::lock_guard<std::mutex> eventLock(_debugEventMutex);
+	const auto record = _vmRegistry.Find(vmId);
+	if (!record || record->contextGeneration != contextGeneration || record->sourceEpoch != sourceEpoch ||
+		record->state != VmLifecycleState::Paused) return;
+	_vmRegistry.SetState(vmId, VmLifecycleState::Running, "debug-action");
+	auto resumed = MakeV2Envelope("event", "debug.resumed", _protocolSession.AgentSessionId(),
+		_protocolSession.ConnectionEpoch(), std::string(), NextDebugEventSeq(), {{"pauseId", pauseId}});
+	SetEnvelopeTarget(resumed, vmId, pauseId, threadId);
+	resumed["contextGeneration"] = contextGeneration;
+	resumed["sourceEpoch"] = sourceEpoch;
+	SendV2Document(resumed);
+}
+
+bool EmmyFacade::TryStartEvaluation(const std::shared_ptr<EvalContext>& context) {
+	if (!context) return false;
+	if (context->requestId.empty()) return true;
+	return _protocolSession.TryStartRequest(context->requestId, context->connectionEpoch, context->error);
+}
+
 void EmmyFacade::OnEvalResult(std::shared_ptr<EvalContext> context) {
+	const auto transporter = std::atomic_load(&this->transporter);
 	if (transporter) {
 		if (context && !context->requestId.empty()) {
+			if (!_protocolSession.AcceptIncomingEpoch(context->connectionEpoch, false)) return;
+			const auto requestError = _protocolSession.RequestError(context->requestId, context->connectionEpoch);
+			if (!requestError.empty()) { context->success = false; context->error = requestError; }
 			nlohmann::json payload = context->Serialize();
+			nlohmann::json error;
+			if (!context->success) error = {{"code", context->error.empty() ? "EVALUATION_DENIED" : context->error},
+				{"message", "restricted evaluation failed"}, {"retryable", false}};
 			nlohmann::json envelope = MakeV2Envelope(
 				"response", "debug.eval", _protocolSession.AgentSessionId(),
-				_protocolSession.ConnectionEpoch(), context->requestId, 0, payload,
-				context->success);
-			envelope["target"] = nlohmann::json::object();
-			if (context->vmId != 0) envelope["target"]["vmId"] = VmProtocolId(context->vmId);
-			if (context->pauseId != 0) envelope["target"]["pauseId"] = context->pauseId;
+				context->connectionEpoch, context->requestId, 0, payload,
+				context->success, error);
+			SetEnvelopeTarget(envelope, context->vmId, context->pauseId,
+				context->threadId, context->frameId);
 			CompleteV2Request(context->requestId, context->operationHash, envelope);
 			SendV2Document(envelope);
-		} else {
+		} else if (context) {
 			transporter->Send(int(MessageCMD::EvalRsp), context->Serialize());
 		}
 	}
 }
 
 void EmmyFacade::SendLog(LogType type, const char *fmt, ...) {
+	const auto transporter = std::atomic_load(&this->transporter);
 	va_list args;
 	va_start(args, fmt);
 	char buff[1024] = {0};
@@ -775,6 +1163,7 @@ void EmmyFacade::SendLog(LogType type, const char *fmt, ...) {
 }
 
 void EmmyFacade::OnLuaStateGC(lua_State *L) {
+	ClearDebuggerHook(L);
 	auto vmRecord = _hostVmRegistry.FindByState(L);
 	if (vmRecord) {
 		BeginLuaVmClose(vmRecord->id, "lua-state-gc");
@@ -796,9 +1185,14 @@ void EmmyFacade::OnLuaStateGC(lua_State *L) {
 }
 
 void EmmyFacade::Hook(lua_State *L, lua_Debug *ar) {
+	if (workMode == WorkMode::Attach && !_emmyDebuggerManager.IsRunning()) {
+		ClearDebuggerHook(L);
+		return;
+	}
 	auto debugger = GetDebugger(L);
 	if (debugger) {
 		if (!debugger->IsRunning()) {
+			if (GetWorkMode() == WorkMode::Attach) ClearDebuggerHook(L);
 			if (GetWorkMode() == WorkMode::EmmyCore) {
 				if (luaVersion != LuaVersion::LUA_JIT) {
 					if (debugger->IsMainCoroutine(L)) {
@@ -814,8 +1208,8 @@ void EmmyFacade::Hook(lua_State *L, lua_Debug *ar) {
 		debugger->Hook(ar, L);
 	} else {
 		if (workMode == WorkMode::Attach) {
+			if (!install_emmy_debugger(L)) return;
 			debugger = _emmyDebuggerManager.AddDebugger(L);
-			install_emmy_debugger(L);
 
 			RegisterFallbackLuaVm(L, "HOOK_FALLBACK");
 
@@ -827,8 +1221,9 @@ void EmmyFacade::Hook(lua_State *L, lua_Debug *ar) {
 			auto obj = nlohmann::json::object();
 			obj["state"] = reinterpret_cast<int64_t>(L);
 
-			if (this->transporter) {
-				this->transporter->Send(int(MessageCMD::AttachedNotify), obj);
+			const auto transporter = std::atomic_load(&this->transporter);
+			if (transporter) {
+				transporter->Send(int(MessageCMD::AttachedNotify), obj);
 			}
 
 			debugger->Hook(ar, L);
@@ -845,7 +1240,7 @@ std::shared_ptr<Debugger> EmmyFacade::GetDebugger(lua_State *L) {
 }
 
 void EmmyFacade::SetReadyHook(lua_State *L) {
-	lua_sethook(L, ReadyLuaHook, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
+	SetDebuggerHook(L, ReadyLuaHook, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
 }
 
 void EmmyFacade::StartDebug() {
@@ -856,7 +1251,7 @@ void EmmyFacade::StartDebug() {
 bool EmmyFacade::StartupHookMode(int port) {
 	// 只有在已经有 transporter 时才需要清理
 	// 首次调用时不需要 Destroy()，避免不必要的 mutex 操作
-	if (transporter) {
+	if (std::atomic_load(&transporter)) {
 		Destroy();
 	}
 
@@ -868,24 +1263,24 @@ bool EmmyFacade::StartupHookMode(int port) {
 	std::string err;
 	const auto suc = s->Listen("localhost", port, err);
 	if (suc) {
-		transporter = s;
+		std::atomic_store(&transporter, std::static_pointer_cast<Transporter>(s));
 		// transporter->SetHandler(shared_from_this());
 	}
 	return suc;
 }
 
 void EmmyFacade::Attach(lua_State *L) {
-	if (!this->transporter || !this->transporter->IsConnected())
+	const auto transporter = std::atomic_load(&this->transporter);
+	if (!transporter || !transporter->IsConnected())
 		return;
 
 	// 这里存在一个问题就是 hook 的时机太早了，globalstate 都还没初始化完毕
 
-	if (!isAPIReady) {
-		// 考虑到emmy_hook use lua source
-		isAPIReady = install_emmy_debugger(L);
-	}
-
-	lua_sethook(L, EmmyFacade::HookLua, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
+#ifndef EMMY_USE_LUA_SOURCE
+	if (!SetupLuaAPI()) return;
+#endif
+	if (!ValidateLuaVmAccess(L)) return;
+	SetDebuggerHook(L, EmmyFacade::HookLua, LUA_MASKCALL | LUA_MASKLINE | LUA_MASKRET, 0);
 }
 
 bool EmmyFacade::RegisterTypeName(lua_State *L, const std::string &typeName, std::string &err) {

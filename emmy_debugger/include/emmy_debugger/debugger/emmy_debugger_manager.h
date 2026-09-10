@@ -15,6 +15,10 @@
 class EmmyDebuggerManager
 {
 public:
+	struct RouteResult {
+		bool ok;
+		const char* errorCode;
+	};
 	using UniqueIdentifyType = unsigned long long;
 
 	EmmyDebuggerManager();
@@ -36,6 +40,8 @@ public:
 	 * 从L 获取主lua state所在得debugger 移除并返回
 	 */
 	std::shared_ptr<Debugger> RemoveDebugger(lua_State* L);
+	// Metadata-only removal; safe after lua_close has freed the state.
+	std::shared_ptr<Debugger> RemoveDebuggerByVmId(uint64_t vmId);
 
 	/*
 	 * 获得所有得debugger
@@ -47,16 +53,23 @@ public:
 	 * 获得当前命中的debugger
 	 */
 	std::shared_ptr<Debugger> GetHitBreakpoint();
+	void ClearHitDebugger(uint64_t vmId = 0);
 
 	void SetHitDebugger(std::shared_ptr<Debugger> debugger);
 
 	bool IsDebuggerEmpty();
 
 	void AddBreakpoint(std::shared_ptr<BreakPoint> breakpoint);
+	// Atomically replaces all composite locations. Used after an IDEA/CLI
+	// owner reconciliation so one owner cannot erase another owner's entry.
+	void ReplaceBreakpoints(const std::vector<std::shared_ptr<BreakPoint>>& newBreakpoints);
 	// 返回拷贝后的断点列表
 	std::vector<std::shared_ptr<BreakPoint>> GetBreakpoints();
 
-	void RemoveBreakpoint(const std::string& file, int line);
+	void RemoveBreakpoint(const std::string& file, int line,
+		const std::string& owner = std::string(),
+		const std::string& breakpointId = std::string(),
+		uint64_t vmId = 0);
 
     void RemoveAllBreakpoints();
 
@@ -73,6 +86,10 @@ public:
 	void Eval(std::shared_ptr<EvalContext> ctx);
 	bool DoActionForVm(uint64_t vmId, DebugAction action, uint64_t pauseId = 0);
 	bool EvalForVm(uint64_t vmId, std::shared_ptr<EvalContext> ctx);
+	RouteResult RouteAction(uint64_t vmId, DebugAction action, uint64_t pauseId = 0,
+		const std::string& threadId = std::string(),
+		uint64_t contextGeneration = 0, uint64_t sourceEpoch = 0);
+	RouteResult RouteEval(uint64_t vmId, std::shared_ptr<EvalContext> ctx);
 
 	void OnDisconnect();
 

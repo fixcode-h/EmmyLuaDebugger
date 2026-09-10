@@ -95,6 +95,7 @@ bool HookStateStepIn::Start(std::shared_ptr<Debugger> debugger, lua_State* curre
 
 void HookStateStepIn::ProcessHook(std::shared_ptr<Debugger> debugger, lua_State* L, lua_Debug* ar)
 {
+	if (L != currentStateL) return;
 	UpdateStackLevel(debugger, L, ar);
 	if (getDebugEvent(ar) == LUA_HOOKLINE)
 	{
@@ -103,7 +104,7 @@ void HookStateStepIn::ProcessHook(std::shared_ptr<Debugger> debugger, lua_State*
 		auto source = getDebugSource(ar);
 		if(currentLine != line || file != source)
 		{
-			debugger->HandleBreak();
+			debugger->HandleBreak(L);
 		}
 		return;
 	}
@@ -121,10 +122,11 @@ bool HookStateStepOut::Start(std::shared_ptr<Debugger> debugger, lua_State* curr
 
 void HookStateStepOut::ProcessHook(std::shared_ptr<Debugger> debugger, lua_State* L, lua_Debug* ar)
 {
+	if (L != currentStateL) return;
 	UpdateStackLevel(debugger, L, ar);
 	if (newStackLevel < oriStackLevel)
 	{
-		debugger->HandleBreak();
+		debugger->HandleBreak(L);
 		return;
 	}
 	StackLevelBasedState::ProcessHook(debugger, L, ar);
@@ -145,11 +147,12 @@ bool HookStateStepOver::Start(std::shared_ptr<Debugger> debugger, lua_State* cur
 
 void HookStateStepOver::ProcessHook(std::shared_ptr<Debugger> debugger, lua_State* L, lua_Debug* ar)
 {
+	if (L != currentStateL) return;
 	UpdateStackLevel(debugger, L, ar);
 	// step out
 	if (newStackLevel < oriStackLevel)
 	{
-		debugger->HandleBreak();
+		debugger->HandleBreak(L);
 		return;
 	}
 
@@ -162,7 +165,7 @@ void HookStateStepOver::ProcessHook(std::shared_ptr<Debugger> debugger, lua_Stat
 
 		if (getDebugSource(ar) == file || line == -1)
 		{
-			debugger->HandleBreak();
+			debugger->HandleBreak(L);
 			return;
 		}
 	}
@@ -173,7 +176,7 @@ void HookStateBreak::ProcessHook(std::shared_ptr<Debugger> debugger, lua_State* 
 {
 	if (getDebugEvent(ar) == LUA_HOOKLINE)
 	{
-		debugger->HandleBreak();
+			debugger->HandleBreak(L);
 	}
 	else
 	{

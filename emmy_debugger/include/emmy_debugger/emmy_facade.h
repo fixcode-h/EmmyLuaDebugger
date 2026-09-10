@@ -29,6 +29,8 @@
 #include "emmy_debugger/proto/protocol_session.h"
 #include "emmy_debugger/proto/protocol_v2.h"
 #include "emmy_debugger/transporter/transport_auth.h"
+#include "emmy_debugger/vm/host_value_provider.h"
+#include "emmy_debugger/vm/source_registry.h"
 #include "proto/proto_handler.h"
 
 enum class LogType
@@ -72,8 +74,11 @@ public:
 	int OnDisconnect();
 	void WaitIDE(bool force = false, int timeout = 0);
 	bool OnBreak(std::shared_ptr<Debugger> debugger);
+	void OnResume(uint64_t vmId, uint64_t pauseId, const std::string& threadId,
+		uint64_t contextGeneration, uint64_t sourceEpoch);
 	void Destroy();
 	void OnEvalResult(std::shared_ptr<EvalContext> context);
+	bool TryStartEvaluation(const std::shared_ptr<EvalContext>& context);
 	void SendLog(LogType type, const char* fmt, ...);
 	void OnLuaStateGC(lua_State* L);
 	void Hook(lua_State* L, lua_Debug* ar);
@@ -103,16 +108,24 @@ public:
 	void OnReceiveMessage(nlohmann::json document);
 	void OnV2Envelope(nlohmann::json document);
 	void OnTransportProtocolError(const std::string& reason);
+	// Monotonic sequence for pause/resume events, independent from VM lifecycle events.
+	uint64_t NextDebugEventSeq();
 
 	uint64_t RegisterLuaVm(lua_State* L, const VmMetadata& metadata);
 	bool NotifyLuaVmReady(uint64_t registrationId);
 	bool BeginLuaVmClose(uint64_t registrationId, const std::string& reason);
 	bool EndLuaVmClose(uint64_t registrationId);
+	bool ResetLuaVmContext(uint64_t registrationId, const std::string& reason);
 	bool ReleaseLuaVmRegistration(uint64_t registrationId);
 	bool SetLuaVmDisplayName(uint64_t registrationId, const std::string& displayName);
 	bool ReconcileHostLuaVms();
+	// Called on the Lua owner thread, after API loading and before Lua access.
+	bool ValidateLuaVmAccess(lua_State* L);
 	NativeVmRegistry& GetVmRegistry();
 	HostVmRegistry& GetHostVmRegistry();
+	HostValueProviderRegistry& GetHostValueProviderRegistry();
+	SourceRegistry& GetSourceRegistry() { return _sourceRegistry; }
+	bool RegisterLuaSource(uint64_t registrationId, HostSourceIdentity identity);
 
 	// Start hook 作为成员存在
 	std::function<void()> StartHook;
@@ -143,9 +156,10 @@ private:
 	
 	std::shared_ptr<Transporter> transporter;
 	
-	bool isIDEReady;
-	bool isAPIReady;
-	bool isWaitingForIDE;
+	std::atomic<bool> isIDEReady;
+	std::atomic<bool> isAPIReady;
+	std::mutex _apiSetupMutex;
+	std::atomic<bool> isWaitingForIDE;
 	WorkMode workMode;
 
 	// 表示使用了tcplisten tcpConnect 的states
@@ -158,9 +172,15 @@ private:
 	EmmyDebuggerManager _emmyDebuggerManager;
 	NativeVmRegistry _vmRegistry;
 	HostVmRegistry _hostVmRegistry;
+	HostValueProviderRegistry _hostValueProviderRegistry;
+	SourceRegistry _sourceRegistry;
+	std::mutex _sourceLifecycleMutex;
 	ProtocolSession _protocolSession;
 	TransportAuth _transportAuth;
 	std::atomic<bool> _authenticated;
+	std::atomic<uint64_t> _debugEventSeq;
+	std::mutex _debugEventMutex;
+	std::atomic<uint64_t> _breakpointRevision;
 
 	struct PendingV2Event {
 		VmLifecycleEvent event;

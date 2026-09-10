@@ -185,16 +185,16 @@ bool ValidateRestrictedEvalPayload(const nlohmann::json& payload,
 		errorCode = "INVALID_ARGUMENT";
 		return false;
 	}
-	if (!payload["policy"].is_string() || payload["policy"].get<std::string>() != "VALUE_PATH") {
+	if (!payload.contains("policy") || !payload["policy"].is_string() || payload["policy"].get<std::string>() != "VALUE_PATH") {
 		errorCode = "EVALUATION_DENIED";
 		return false;
 	}
-	if (!payload["expr"].is_string()) {
+	if (!payload.contains("expr") || !payload["expr"].is_string()) {
 		errorCode = "EVALUATION_DENIED";
 		return false;
 	}
 	RestrictedEvalLimits parsed;
-	if (payload.contains("depth") && !IsIntegerInRange(payload["depth"], 0, 32, parsed.maxDepth)) {
+	if (payload.contains("depth") && !IsIntegerInRange(payload["depth"], 0, 3, parsed.maxDepth)) {
 		errorCode = "EVALUATION_LIMIT_EXCEEDED";
 		return false;
 	}
@@ -203,15 +203,15 @@ bool ValidateRestrictedEvalPayload(const nlohmann::json& payload,
 		errorCode = "INVALID_ARGUMENT";
 		return false;
 	}
-	if (payload.contains("maxDepth") && !IsIntegerInRange(payload["maxDepth"], 0, 32, parsed.maxDepth)) {
+	if (payload.contains("maxDepth") && !IsIntegerInRange(payload["maxDepth"], 0, 3, parsed.maxDepth)) {
 		errorCode = "EVALUATION_LIMIT_EXCEEDED";
 		return false;
 	}
-	if (payload.contains("maxNodes") && !IsIntegerInRange(payload["maxNodes"], 1, 100000, parsed.maxNodes)) {
+	if (payload.contains("maxNodes") && !IsIntegerInRange(payload["maxNodes"], 1, 100, parsed.maxNodes)) {
 		errorCode = "EVALUATION_LIMIT_EXCEEDED";
 		return false;
 	}
-	if (payload.contains("maxBytes") && !IsIntegerInRange(payload["maxBytes"], 1, 16 * 1024 * 1024, parsed.maxBytes)) {
+	if (payload.contains("maxBytes") && !IsIntegerInRange(payload["maxBytes"], 1, 64 * 1024, parsed.maxBytes)) {
 		errorCode = "EVALUATION_LIMIT_EXCEEDED";
 		return false;
 	}
