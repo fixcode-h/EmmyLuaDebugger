@@ -33,14 +33,16 @@ BOOL WINAPI DllMain(HINSTANCE hModule, DWORD reason, LPVOID reserved) {
 	if (reason == DLL_PROCESS_ATTACH) {
 		TSharedData data;
 		DisableThreadLibraryCalls(hModule);
-		if (!CreateMemFile(&file)) {
+		const DWORD processId = GetCurrentProcessId();
+		if (!CreateMemFile(&file, processId)) {
 			return FALSE;
 		}
 		// Set shared memory to hold what our remote process needs
 		memset(file.lpMemFile, 0, SHMEMSIZE);
-		data.hModule = hModule;
-		data.lpInit = (LPDWORD)(StartupHookMode);
-		data.dwOffset = (DWORD)(data.lpInit) - (DWORD)(data.hModule);
+		data.processId = processId;
+		data.hModule = reinterpret_cast<uintptr_t>(hModule);
+		data.lpInit = reinterpret_cast<uintptr_t>(&StartupHookMode);
+		data.dwOffset = data.lpInit - data.hModule;
 		memcpy(file.lpMemFile, &data, sizeof(TSharedData));
 	}
 	else if (reason == DLL_PROCESS_DETACH) {

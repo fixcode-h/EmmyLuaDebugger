@@ -2,12 +2,16 @@
 #define _SHME_H_
 
 #include <Windows.h>
+#include <cstdint>
+#include <string>
 
 // Data struct to be shared between processes
 struct TSharedData {
-	DWORD dwOffset = 0;
-	HMODULE hModule = nullptr;
-	LPDWORD lpInit = nullptr;
+	uint32_t version = 1;
+	DWORD processId = 0;
+	uintptr_t dwOffset = 0;
+	uintptr_t hModule = 0;
+	uintptr_t lpInit = 0;
 };
 
 struct SharedFile {
@@ -24,13 +28,16 @@ struct RemoteThreadParam
 // Size (in bytes) of data to be shared
 #define SHMEMSIZE sizeof(TSharedData)
 // Name of the shared file map (NOTE: Global namespaces must have the SeCreateGlobalPrivilege privilege)
-#define SHMEMNAME "InjectedDllName_SHMEM"
+#define SHMEMNAME_PREFIX "InjectedDllName_SHMEM_"
 
-bool CreateMemFile(SharedFile* file);
+std::string SharedMemoryName(DWORD processId);
+
+bool CreateMemFile(SharedFile* file, DWORD processId);
 
 bool CloseMemFile(SharedFile* file);
 
-bool ReadSharedData(TSharedData& data);
+bool ReadSharedData(DWORD processId, TSharedData& data);
+bool ValidateSharedData(const TSharedData& data, DWORD processId);
 
 bool WriteSharedData(HANDLE hMapFile, LPVOID lpMemFile, TSharedData& data);
 #endif

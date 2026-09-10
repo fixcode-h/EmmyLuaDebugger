@@ -201,7 +201,11 @@ bool GetStartupDirectory(char *path, int maxPathLength) {
 	return true;
 }
 
-bool ExecuteRemoteKernelFuntion(HANDLE process, const char *functionName, LPVOID param, DWORD &exitCode) {
+static const DWORD kRemoteThreadTimeoutMs = 30000;
+
+bool ExecuteRemoteKernelFuntion(HANDLE process, const char *functionName, LPVOID param, DWORD &exitCode,
+	bool* timedOut = nullptr) {
+	if (timedOut != nullptr) *timedOut = false;
 	HMODULE kernelModule = GetModuleHandle("Kernel32");
 	FARPROC function = GetProcAddress(kernelModule, functionName);
 
@@ -219,8 +223,16 @@ bool ExecuteRemoteKernelFuntion(HANDLE process, const char *functionName, LPVOID
 	                                   &threadId);
 
 	if (thread != nullptr) {
-		WaitForSingleObject(thread, INFINITE);
-		GetExitCodeThread(thread, &exitCode);
+		const DWORD waitResult = WaitForSingleObject(thread, kRemoteThreadTimeoutMs);
+		if (waitResult == WAIT_TIMEOUT) {
+			if (timedOut != nullptr) *timedOut = true;
+			CloseHandle(thread);
+			return false;
+		}
+		if (waitResult != WAIT_OBJECT_0 || !GetExitCodeThread(thread, &exitCode)) {
+			CloseHandle(thread);
+			return false;
+		}
 
 		CloseHandle(thread);
 		return true;
@@ -229,41 +241,33 @@ bool ExecuteRemoteKernelFuntion(HANDLE process, const char *functionName, LPVOID
 }
 
 bool IsBeingInjected(DWORD processId, LPCSTR moduleFileName) {
-	HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
-
-	if (process == nullptr) {
-		return false;
-	}
-
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, processId);
+	if (snapshot == INVALID_HANDLE_VALUE) return false;
+	MODULEENTRY32 entry = {};
+	entry.dwSize = sizeof(entry);
 	bool result = false;
-
-	DWORD exitCode;
-	void *remoteFileName = RemoteDup(process, moduleFileName, strlen(moduleFileName) + 1);
-
-	if (ExecuteRemoteKernelFuntion(process, "GetModuleHandleA", remoteFileName, exitCode)) {
-		result = exitCode != 0;
+	if (Module32First(snapshot, &entry)) {
+		do {
+			if (_stricmp(entry.szModule, moduleFileName) == 0 || _stricmp(entry.szExePath, moduleFileName) == 0) {
+				result = true;
+				break;
+			}
+		} while (Module32Next(snapshot, &entry));
 	}
-
-	if (remoteFileName != nullptr) {
-		VirtualFreeEx(process, remoteFileName, 0, MEM_RELEASE);
-	}
-
-	if (process != nullptr) {
-		CloseHandle(process);
-	}
+	CloseHandle(snapshot);
 	return result;
 }
 
 bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, bool capture,
 	const std::string& authToken, bool* alreadyAttached) {
-	if (IsBeingInjected(processId, dllFileName)) {
-		if (alreadyAttached != nullptr) *alreadyAttached = true;
-		MessageEvent("The process already attached.");
-		return true;
+	const bool wasAttached = IsBeingInjected(processId, dllFileName);
+	if (alreadyAttached != nullptr) *alreadyAttached = wasAttached;
+	if (authToken.size() >= sizeof(RemoteThreadParam().authToken)) {
+		MessageEvent("Authentication token is too long", MessageType_Error);
+		return false;
 	}
-	if (alreadyAttached != nullptr) *alreadyAttached = false;
 
-	MessageEvent("Start inject dll ...");
+	MessageEvent(wasAttached ? "Reconfigure existing Emmy Agent ..." : "Start inject dll ...");
 	bool success = true;
 
 	const HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
@@ -275,18 +279,29 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 	}
 	DWORD exitCode = 0;
 
-	// Set dll directory
-	void *dllDirRemote = RemoteDup(process, dllDir, strlen(dllDir) + 1);
-	ExecuteRemoteKernelFuntion(process, "SetDllDirectoryA", dllDirRemote, exitCode);
-	VirtualFreeEx(process, dllDirRemote, 0, MEM_RELEASE);
+	if (!wasAttached) {
+		// Set dll directory
+		void *dllDirRemote = RemoteDup(process, dllDir, strlen(dllDir) + 1);
+		bool dllDirTimedOut = false;
+		if (dllDirRemote == nullptr ||
+			!ExecuteRemoteKernelFuntion(process, "SetDllDirectoryA", dllDirRemote, exitCode, &dllDirTimedOut)) {
+			success = false;
+		}
+		if (dllDirRemote != nullptr && !dllDirTimedOut) VirtualFreeEx(process, dllDirRemote, 0, MEM_RELEASE);
 
-	// Load the DLL.
-	void *remoteFileName = RemoteDup(process, dllFileName, strlen(dllFileName) + 1);
-	success &= ExecuteRemoteKernelFuntion(process, "LoadLibraryA", remoteFileName, exitCode);
-	VirtualFreeEx(process, remoteFileName, 0, MEM_RELEASE);
-	if (!success || exitCode == 0) {
-		MessageEvent("Failed to load library", MessageType_Error);
-		return false;
+		// Load the DLL.
+		void *remoteFileName = RemoteDup(process, dllFileName, strlen(dllFileName) + 1);
+		bool loadTimedOut = false;
+		if (remoteFileName == nullptr ||
+			!ExecuteRemoteKernelFuntion(process, "LoadLibraryA", remoteFileName, exitCode, &loadTimedOut)) {
+			success = false;
+		}
+		if (remoteFileName != nullptr && !loadTimedOut) VirtualFreeEx(process, remoteFileName, 0, MEM_RELEASE);
+		if (!success || exitCode == 0) {
+			MessageEvent("Failed to load library", MessageType_Error);
+			CloseHandle(process);
+			return false;
+		}
 	}
 
 
@@ -294,6 +309,10 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 	if (capture || !authToken.empty()) {
 		lpParam = (void *) VirtualAllocEx(process, 0, sizeof(RemoteThreadParam), MEM_COMMIT,
 		                                  PAGE_READWRITE);
+		if (lpParam == nullptr) {
+			CloseHandle(process);
+			return false;
+		}
 		RemoteThreadParam param{};
 		param.bRedirect = capture ? TRUE : FALSE;
 		if (!authToken.empty()) {
@@ -303,41 +322,55 @@ bool InjectDll(DWORD processId, const char *dllDir, const char *dllFileName, boo
 			param.authToken[copyLength] = '\0';
 		}
 
-		::WriteProcessMemory(process, lpParam, &param, sizeof(RemoteThreadParam), NULL);
+		if (!::WriteProcessMemory(process, lpParam, &param, sizeof(RemoteThreadParam), NULL)) {
+			VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
+			CloseHandle(process);
+			return false;
+		}
 	}
 
 	// Read shared data & call 'StartupHookMode()'
 	TSharedData data;
-	if (ReadSharedData(data)) {
+	bool startupTimedOut = false;
+	if (success && ReadSharedData(processId, data)) {
 		DWORD threadId;
 		HANDLE thread = CreateRemoteThread(process,
 		                                   nullptr,
 		                                   0,
-		                                   (LPTHREAD_START_ROUTINE) data.lpInit,
+									   reinterpret_cast<LPTHREAD_START_ROUTINE>(data.lpInit),
 		                                   (void *) lpParam,
 		                                   0,
 		                                   &threadId);
 
 		if (thread != nullptr) {
-			WaitForSingleObject(thread, INFINITE);
-			GetExitCodeThread(thread, &exitCode);
-
-			CloseHandle(thread);
-			success = exitCode == 0;
-			if (lpParam != nullptr) {
+			const DWORD waitResult = WaitForSingleObject(thread, kRemoteThreadTimeoutMs);
+			if (waitResult == WAIT_TIMEOUT) {
+				startupTimedOut = true;
+				CloseHandle(thread);
+				success = false;
+			} else {
+				GetExitCodeThread(thread, &exitCode);
+				CloseHandle(thread);
+				success = waitResult == WAIT_OBJECT_0 && IsBeingInjected(processId, dllFileName);
+			}
+			if (lpParam != nullptr && !startupTimedOut) {
 				VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
 				lpParam = nullptr;
 			}
 		} else {
 			success = false;
 		}
+	} else {
+		success = false;
 	}
-	if (lpParam != nullptr) {
+	if (lpParam != nullptr && !startupTimedOut) {
 		VirtualFreeEx(process, lpParam, 0, MEM_RELEASE);
 	}
 
-	// Reset dll directory
-	ExecuteRemoteKernelFuntion(process, "SetDllDirectoryA", nullptr, exitCode);
+	if (!wasAttached) {
+		// Reset dll directory
+		ExecuteRemoteKernelFuntion(process, "SetDllDirectoryA", nullptr, exitCode);
+	}
 
 	if (process != nullptr) {
 		CloseHandle(process);
@@ -370,21 +403,25 @@ bool InjectDllForProcess(HANDLE hProcess, const char *dllDir, const char *dllFil
 
 	// Read shared data & call 'StartupHookMode()'
 	TSharedData data;
-	if (ReadSharedData(data)) {
+	if (ReadSharedData(GetProcessId(hProcess), data)) {
 		DWORD threadId;
 		HANDLE thread = CreateRemoteThread(hProcess,
 		                                   nullptr,
 		                                   0,
-		                                   (LPTHREAD_START_ROUTINE) data.lpInit,
+		                                   reinterpret_cast<LPTHREAD_START_ROUTINE>(data.lpInit),
 		                                   nullptr,
 		                                   0,
 		                                   &threadId);
 
 		if (thread != nullptr) {
-			WaitForSingleObject(thread, INFINITE);
+			const DWORD waitResult = WaitForSingleObject(thread, kRemoteThreadTimeoutMs);
+			if (waitResult == WAIT_TIMEOUT) {
+				CloseHandle(thread);
+				return false;
+			}
 			GetExitCodeThread(thread, &exitCode);
 			CloseHandle(thread);
-			success = true;
+			success = waitResult == WAIT_OBJECT_0;
 		} else {
 			success = false;
 		}
