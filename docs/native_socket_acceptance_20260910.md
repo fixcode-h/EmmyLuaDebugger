@@ -17,9 +17,9 @@
 
 这些是 Native 与真实 Lua 自动化证据，不是 IDEA/UE 进程注入验收，也不是 CLI→IDEA→UE 的一体化端到端测试。
 
-## TCP 阻塞：保留失败
+## TCP 对照：放行前失败，受限放行后通过
 
-最终独立复验：
+放行前独立复验：
 
 ```powershell
 ctest --test-dir build-runtime-20260910 `
@@ -31,11 +31,15 @@ ctest --test-dir build-runtime-20260910 `
 
 本机对照诊断：.NET TcpListener/TcpClient 回环成功；独立纯 Winsock 程序不链接 Emmy 或 libuv，仍在 bind/listen 成功后 connect 超时；.NET 客户端连接 Native 服务端也超时。
 
-本轮已通过只读 WFP 事件确定拦截位置：独立诊断程序的 PID、临时端口、时间与入站 drop 完整对应，随后真实 `emmy_native_socket_harness.exe` 在端口 39547 的连接也命中同一 filter 70739。该 filter 的 provider 为 `FWPM_PROVIDER_MPSSVC_WF`、layer 为 `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`、action 为 `FWP_ACTION_BLOCK`，名称为 `Query User`，origin 为 `Query User Default`。这是 Windows 防火墙对没有显式放行的入站连接进行的默认拦截。本轮没有修改安全策略。
+放行前已通过只读 WFP 事件确定拦截位置：独立诊断程序的 PID、临时端口、时间与入站 drop 完整对应，随后真实 `emmy_native_socket_harness.exe` 在端口 39547 的连接也命中同一 filter 70739。该 filter 的 provider 为 `FWPM_PROVIDER_MPSSVC_WF`、layer 为 `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4`、action 为 `FWP_ACTION_BLOCK`，名称为 `Query User`，origin 为 `Query User Default`。这是本次未获得显式放行的连接落入 Windows 防火墙兜底过滤器的证据；截至该阶段尚未修改安全策略。
 
 不能仅根据 `codex_sandbox_offline_*` 规则名称归因：本次 Native 进程 SID 与这些规则限定的离线用户 SID 不同，诊断进程没有 restricted SID。WFP 原始导出包含本机其它程序信息，仅保存在父仓库忽略的 `build/verification-tools`，不提交。
 
-本地其余测试使用显式 `-E` 排除 TCP；CI **不排除** TCP，仍要求其通过。不得将本地结果描述为“Native 全矩阵通过”。
+此前本地其余测试使用显式 `-E` 排除 TCP；CI **不排除** TCP，仍要求其通过。不得将本地结果描述为“Native 全矩阵通过”。
+
+17:46 经用户授权，父仓库的 `tools/test-native-tcp-with-firewall.ps1` 仅为 `build-runtime-20260910` 内两个精确测试 exe 临时允许 `127.0.0.1 → 127.0.0.1` 入站 TCP。相同二进制复验 **2/2 通过，0.63 秒**，报告为 `tcp-approved-results.xml`。脚本 finally 已删除本次规则，再次查询规则数为 0；未留下持久放行。该结果关闭了 x64 Lua source 的两项 TCP 阻塞，其他配置仍保留此前明确排除的统计范围。
+
+后续只读诊断确认 PowerShell 与当前 Java 已有 Public 入站 TCP Allow，而 Native harness 无匹配规则；纯 IPv4/.NET 回环成功，未放行的独立 Winsock 程序仍超时。实际拦截为 Windows 防火墙默认应用授权路径；尚未确定本机为何没有通常的桌面回环豁免，不能仅以默认入站 Block 宣称查明最初策略来源。项目继续使用 TCP。
 
 ## 分架构结果与复现
 
@@ -46,6 +50,8 @@ ctest --test-dir build-runtime-20260910 `
 | 动态 API | x64 Debug / Release | 各 14/14；每配置显式排除 1 项 TCP |
 | 动态 API | x86 Debug / Release | 各 14/14；每配置显式排除 1 项 TCP |
 | Lua source | x64 Debug / x86 Debug | 各 17/17；每配置显式排除 2 项 TCP |
+
+上述报告保留原统计范围；x64 Lua 5.4 source 另有 `tcp-approved-results.xml` 的 2/2 TCP 通过记录，不能将其外推为其他配置的 TCP 结果。
 
 ```powershell
 ctest --test-dir <build-directory> `
