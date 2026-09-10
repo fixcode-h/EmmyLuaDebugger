@@ -13,10 +13,12 @@ lua_State* GetMainState_lua54(lua_State* L)
 #else
 	// The loader's private lua_State layout is not proof of the host ABI.
 	// Lua 5.4 publishes the main thread through the registry instead.
-	const int top = lua_gettop(L);
-	lua_rawgeti(L, LUA_REGISTRYINDEX, 1 /* LUA_RIDX_MAINTHREAD */);
-	lua_State* main = lua_tothread(L, -1);
-	lua_settop(L, top);
+	if (lua_gettop == nullptr || lua_rawgeti == nullptr ||
+		lua_tothread == nullptr || lua_settop == nullptr) return nullptr;
+	const int top = (*lua_gettop)(L);
+	(*lua_rawgeti)(L, LUA_REGISTRYINDEX, 1 /* LUA_RIDX_MAINTHREAD */);
+	lua_State* main = (*lua_tothread)(L, -1);
+	(*lua_settop)(L, top);
 	return main;
 #endif
 }
