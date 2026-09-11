@@ -1,4 +1,4 @@
-﻿#include "emmy_hook.h"
+#include "emmy_hook.h"
 #include <cassert>
 #include <set>
 #include <vector>
@@ -36,6 +36,8 @@ typedef int (*_lua_resume_54)(lua_State* L, lua_State* from, int nargs, int* nre
 typedef int (*_lua_resume_53_52)(lua_State* L, lua_State* from, int narg);
 
 typedef int (*_lua_resume_51)(lua_State* L, int narg);
+
+typedef void (*_lua_close)(lua_State* L);
 
 typedef HMODULE (WINAPI *LoadLibraryExW_t)(LPCWSTR lpFileName, HANDLE hFile, DWORD dwFlags);
 
@@ -162,6 +164,21 @@ int lua_resume_worker_51(lua_State* L, int nargs)
 	return luaResume(L, nargs);
 }
 
+void lua_close_worker(lua_State* L)
+{
+	LPVOID lp;
+	LhBarrierGetCallback(&lp);
+	const auto luaClose = (_lua_close)lp;
+	HookManager::CallbackScope callback(g_hookManager);
+	if (callback) {
+		// The facade only records the close and clears debugger-owned hooks here;
+		// the original Lua state is still alive and is closed immediately after
+		// this callback returns.
+		EmmyFacade::Get().OnLuaStateGC(L);
+	}
+	luaClose(L);
+}
+
 #define HOOK(FN, WORKER, REQUIRED) {\
 	const auto it = symbols.find(""#FN"");\
 	if (it != symbols.end()) {\
@@ -182,6 +199,10 @@ void HookLuaFunctions(std::unordered_map<std::string, DWORD64>& symbols)
 		return;
 	// lua 5.1
 	HOOK(lua_pcall, lua_pcall_worker, false);
+	// All supported Lua versions expose lua_close with the same ABI. Notify the
+	// facade before the host frees the state so VM lifecycle consumers receive a
+	// deterministic CLOSING/CLOSED sequence.
+	HOOK(lua_close, lua_close_worker, false);
 	// lua 5.2
 	HOOK(lua_pcallk, lua_pcallk_worker, false);
 	// HOOK(lua_error, lua_error_worker, true);
@@ -438,7 +459,9 @@ void redirect(int port)
 
 	const auto transport = std::make_shared<SocketServerTransporter>();
 	std::string err;
-	const auto suc = transport->Listen("localhost", port, err);
+	// Same IPv4-loopback rationale as EmmyFacade::StartupHookMode: the log
+	// channel must stay reachable under a loopback-scoped inbound exemption.
+	const auto suc = transport->Listen("127.0.0.1", port, err);
 
 	if (!suc)
 	{
@@ -509,8 +532,20 @@ int StartupHookMode(void* lpParam)
 void FindAndHook()
 {
 	if (g_hookManager.IsEnabled()) return;
-	g_hookManager.Enable();
-	if (!g_hookManager.IsEnabled()) return;
+	if (!g_hookManager.Enable()) {
+		// A previous generation may still own EasyHook handles (LhUninstallHook
+		// can fail while its trampoline is in use) and HookManager refuses to
+		// enable in that state. Retry the teardown once, then report: a connected
+		// agent without any Lua hook looks exactly like "attach worked but no
+		// debug window and no breakpoints", which is impossible to diagnose from
+		// the client side.
+		g_hookManager.UnhookIfSafe();
+		if (!g_hookManager.Enable()) {
+			EmmyFacade::Get().SendLog(LogType::Error,
+				"Emmy hook enable failed: the agent has no Lua hook (hook handles were retained)");
+			return;
+		}
+	}
 	// 重要：先处理现有模块，最后再安装钩子
 	// 如果先安装钩子，LoadSymbolsRecursively 中的操作（如 SendLog、peOpenFile）
 	// 可能触发新的 DLL 加载，导致 LoadLibraryExW_intercept 被调用，

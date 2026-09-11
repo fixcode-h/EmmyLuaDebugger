@@ -16,14 +16,15 @@ HookManager::HookManager()
 	: enabled_(false), teardownStarted_(false), inFlight_(0), unhookInProgress_(false) {
 }
 
-void HookManager::Enable() {
+bool HookManager::Enable() {
 	std::lock_guard<std::mutex> lock(mutex_);
 	// A manager can be reused only after the previous generation has fully
 	// quiesced, released all handles, and finished its uninstall callbacks.
 	if (enabled_.load(std::memory_order_acquire) || inFlight_ != 0 ||
-		!hooks_.empty() || unhookInProgress_) return;
+		!hooks_.empty() || unhookInProgress_) return false;
 	teardownStarted_.store(false, std::memory_order_release);
 	enabled_.store(true, std::memory_order_release);
+	return true;
 }
 
 bool HookManager::IsEnabled() const {

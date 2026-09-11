@@ -1,4 +1,4 @@
-﻿/*
+/*
 * Copyright (c) 2019. tangzx(love.tangzx@qq.com)
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
@@ -329,8 +329,14 @@ void EmmyFacade::InitReq(InitParams & params) {
 
 	// fix 以上安全问题
 	StartDebug();
-	ReconcileHostLuaVms();
+	// Answer the handshake BEFORE publishing VM lifecycle events. A client can
+	// only form a valid v2 request identity after InitRsp, so lifecycle events
+	// emitted first make the client request a snapshot without an identity; the
+	// agent then rejects it with MISSING_AGENT_SESSION_ID (payload null) and the
+	// client latches "snapshot outstanding", which permanently fences the VM out
+	// and discards every later debug.paused for it.
 	SendInitResponse();
+	ReconcileHostLuaVms();
 }
 
 bool EmmyFacade::AuthenticateInit(const std::string& token) {
@@ -1253,7 +1259,19 @@ bool EmmyFacade::StartupHookMode(int port) {
 	// 只有在已经有 transporter 时才需要清理
 	// 首次调用时不需要 Destroy()，避免不必要的 mutex 操作
 	if (std::atomic_load(&transporter)) {
-		Destroy();
+		// A re-attach replaces only this session and its transport. Tearing the
+		// hooks down here is what broke every attach after the first: EasyHook
+		// can refuse to uninstall a handle whose trampoline is still in use,
+		// HookManager keeps the failed handle and then rejects every later
+		// Enable, so the agent stays connected with no Lua hook at all. Keeping
+		// the hooks is also what lets the next InitReq reuse them through
+		// FindAndHook()'s already-enabled fast path.
+		OnDisconnect();
+		const auto previousTransport = std::atomic_exchange(
+			&transporter, std::shared_ptr<Transporter>());
+		if (previousTransport) {
+			previousTransport->Stop();
+		}
 	}
 
 	// 1024 - 65535
@@ -1262,7 +1280,11 @@ bool EmmyFacade::StartupHookMode(int port) {
 
 	const auto s = std::make_shared<SocketServerTransporter>();
 	std::string err;
-	const auto suc = s->Listen("localhost", port, err);
+	// Bind IPv4 loopback explicitly. "localhost" resolves to ::1 first on many
+	// Windows hosts, and a firewall rule cannot express an IPv6 loopback address
+	// condition, so a ::1-only listener can never be covered by the
+	// "127.0.0.1 -> 127.0.0.1" inbound exemption that local debugging relies on.
+	const auto suc = s->Listen("127.0.0.1", port, err);
 	if (suc) {
 		std::atomic_store(&transporter, std::static_pointer_cast<Transporter>(s));
 		// transporter->SetHandler(shared_from_this());

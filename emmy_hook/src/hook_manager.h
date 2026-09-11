@@ -42,7 +42,12 @@ public:
 
 	HookManager();
 
-	void Enable();
+	/**
+	 * Returns false when a previous generation still owns handles (an EasyHook
+	 * uninstall can fail while its trampoline is still in use), so callers must
+	 * not assume the manager became usable.
+	 */
+	bool Enable();
 	bool IsEnabled() const;
 
 	// Returns false after disable has begun. A successful entry must always be
