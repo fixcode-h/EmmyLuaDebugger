@@ -89,6 +89,38 @@ void Capture(lua_State* state, lua_Debug* ar) {
 	eval->depth = 2;
 	Require(debugger->Eval(eval, true), "numeric table keys can be enumerated without mutating lua_next key");
 	Require(eval->result->children.size() == 4, "table result retains numeric and string keys");
+	// The IDE variables panel expands a table through its cacheId, not through
+	// VALUE_PATH.  The raw snapshot must therefore cache the captured value
+	// itself: when the cache slot is resolved after the cache table is pushed,
+	// every entry stores the cache table, and expansion returns its internal
+	// "generation:cacheId" keys instead of the table's own children.
+	int valueCacheId = 0;
+	for (auto& variable : rawStacks.front().localVariables) {
+		if (variable->name == "value") valueCacheId = variable->cacheId;
+	}
+	Require(valueCacheId > 0, "captured table is published with a cache id");
+	auto expand = std::make_shared<EvalContext>();
+	expand->requestId = "runtime-cache-expand";
+	expand->vmId = debugger->GetVmId();
+	expand->pauseId = pause;
+	expand->threadId = debugger->GetPauseThreadId();
+	expand->frameId = debugger->GetPauseFrameId(0);
+	expand->contextGeneration = debugger->GetContextGeneration();
+	expand->sourceEpoch = debugger->GetSourceEpoch();
+	expand->stackLevel = 0;
+	expand->policy = "LEGACY";
+	expand->expr = "value";
+	expand->depth = 2;
+	expand->cacheId = valueCacheId;
+	Require(debugger->Eval(expand, true), "cacheId expansion resolves the cached variable");
+	int valueChildren = 0;
+	for (auto& child : expand->result->children) {
+		Require(child->name.find(':') == std::string::npos,
+			"cacheId expansion never leaks internal cache keys as variable names");
+		if (child->name.rfind("(metatable", 0) != 0) ++valueChildren;
+	}
+	Require(valueChildren == 4, "cacheId expansion returns the captured table's own children");
+	Require(lua_gettop(state) == top, "cacheId expansion preserves Lua stack");
 	eval->expr = "value.binary";
 	Require(debugger->Eval(eval, true) && eval->result->value == std::string("a\0b", 3),
 		"Lua string embedded NUL is preserved");

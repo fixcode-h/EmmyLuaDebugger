@@ -1,4 +1,4 @@
-﻿/*
+/*
 * Copyright (c) 2019. tangzx(love.tangzx@qq.com)
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
@@ -941,6 +941,15 @@ void Debugger::CacheValue(int valueIndex, Idx<Variable> variable, lua_State* sta
 	if (!L) {
 		return;
 	}
+
+	// Resolve the value slot while the caller's stack is still intact.  Callers
+	// pass the value as a relative index (-1) directly after lua_getlocal /
+	// lua_getupvalue / lua_pushglobaltable; once the cache table is pushed on
+	// top, -1 would name the cache table itself.  The entry would then store the
+	// cache table instead of the variable, and every later cacheId expansion
+	// (IDE variables panel and CLI) would return the cache table's own
+	// "generation:cacheId" keys instead of the real children.
+	valueIndex = lua_absindex(L, valueIndex);
 
 	const int type = lua_type(L, valueIndex);
 	if (type == LUA_TUSERDATA || type == LUA_TTABLE) {
