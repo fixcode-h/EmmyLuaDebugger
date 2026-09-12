@@ -222,8 +222,115 @@ void HookLuaFunctions(std::unordered_map<std::string, DWORD64>& symbols)
 	}
 }
 
+namespace {
+// Image tables are read through object-free helpers: MSVC forbids __try in a
+// function that also needs C++ object unwinding (C2712), so the SEH guards only
+// touch raw pointers and PODs and the containers are filled afterwards.
+
+const IMAGE_IMPORT_DESCRIPTOR* ReadImageImportTable(const uint8_t* imageBase)
+{
+	__try
+	{
+		const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(imageBase);
+		if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+		const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(imageBase + dos->e_lfanew);
+		if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+		const auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+		if (directory.VirtualAddress == 0 || directory.Size == 0) return nullptr;
+		return reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(imageBase + directory.VirtualAddress);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return nullptr;
+	}
+}
+
+struct RawImageExport {
+	const char* name;
+	DWORD rva;
+};
+
+// Writes the exported lua* symbols of a loaded module image into out[] and
+// returns how many were found. The export table is read straight from memory:
+// the previous peOpenFile path read the whole PE from disk for every module
+// (200+ modules in a UE editor, measured at ~17s per attach) and also blocked
+// the handshake.
+size_t ReadLuaExports(const uint8_t* imageBase, RawImageExport* out, size_t capacity)
+{
+	if (imageBase == nullptr || capacity == 0) return 0;
+	size_t count = 0;
+	__try
+	{
+		const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(imageBase);
+		if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+		const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(imageBase + dos->e_lfanew);
+		if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+		const auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+		if (directory.VirtualAddress == 0 || directory.Size == 0) return 0;
+		const auto* exports = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(
+			imageBase + directory.VirtualAddress);
+		const auto* names = reinterpret_cast<const DWORD*>(imageBase + exports->AddressOfNames);
+		const auto* ordinals = reinterpret_cast<const WORD*>(imageBase + exports->AddressOfNameOrdinals);
+		const auto* functions = reinterpret_cast<const DWORD*>(imageBase + exports->AddressOfFunctions);
+		for (DWORD index = 0; index < exports->NumberOfNames && count < capacity; ++index)
+		{
+			const char* name = reinterpret_cast<const char*>(imageBase + names[index]);
+			if (name[0] != 'l' || name[1] != 'u' || name[2] != 'a') continue;
+			const DWORD ordinal = ordinals[index];
+			if (ordinal >= exports->NumberOfFunctions) continue;
+			const DWORD rva = functions[ordinal];
+			// A forwarded export stores a name string inside the export directory
+			// rather than code, so it has no hookable address.
+			if (rva >= directory.VirtualAddress && rva < directory.VirtualAddress + directory.Size) continue;
+			out[count].name = name;
+			out[count].rva = rva;
+			++count;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return 0;
+	}
+	return count;
+}
+
+// Collects the imported module names of a loaded image as raw pointers. Kept
+// free of C++ objects so the __try/__except above stays legal (C2712).
+size_t ReadImportNames(const uint8_t* imageBase, const char** out, size_t capacity)
+{
+	if (imageBase == nullptr || out == nullptr || capacity == 0) return 0;
+	const auto* descriptor = ReadImageImportTable(imageBase);
+	if (descriptor == nullptr) return 0;
+	size_t count = 0;
+	__try
+	{
+		for (; descriptor->Name != 0 && count < capacity; ++descriptor)
+			out[count++] = reinterpret_cast<const char*>(imageBase + descriptor->Name);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return 0;
+	}
+	return count;
+}
+
+std::vector<std::string> ImageImportNames(const uint8_t* imageBase)
+{
+	constexpr size_t kMaxImports = 256;
+	const char* names[kMaxImports];
+	const size_t count = ReadImportNames(imageBase, names, kMaxImports);
+	std::vector<std::string> modules;
+	modules.reserve(count);
+	for (size_t index = 0; index < count; ++index)
+		if (names[index] != nullptr) modules.emplace_back(names[index]);
+	return modules;
+}
+} // namespace
+
 void LoadSymbolsRecursively(HANDLE hProcess, HMODULE hModule)
 {
+	if (hModule == nullptr) return;
+
 	char moduleName[_MAX_PATH];
 	ZeroMemory(moduleName, _MAX_PATH);
 	DWORD nameLen = GetModuleBaseName(hProcess, hModule, moduleName, _MAX_PATH);
@@ -252,7 +359,6 @@ void LoadSymbolsRecursively(HANDLE hProcess, HMODULE hModule)
 	// skip emmy modules
 	{
 		static const char* emmyModules[] = {"emmy_hook.dll", "EasyHook.dll"};
-		std::string module_path = modulePath;
 		for (const char* emmyModuleName : emmyModules)
 		{
 			if (strcmp(moduleName, emmyModuleName) == 0)
@@ -260,46 +366,25 @@ void LoadSymbolsRecursively(HANDLE hProcess, HMODULE hModule)
 		}
 	}
 
-	EmmyFacade::Get().SendLog(LogType::Debug, "analyze: %s", moduleName);
-
-	PE pe = {};
-	PE_STATUS st = peOpenFile(&pe, modulePath);
+	const auto* const imageBase = reinterpret_cast<const uint8_t*>(hModule);
+	constexpr size_t kMaxLuaExports = 256;
+	RawImageExport exports[kMaxLuaExports];
+	const size_t exportCount = ReadLuaExports(imageBase, exports, kMaxLuaExports);
 	std::unordered_map<std::string, DWORD64> symbols;
-
-	if (st == PE_SUCCESS)
-		st = peParseExportTable(&pe, INT32_MAX);
-	if (st == PE_SUCCESS && PE_HAS_TABLE(&pe, ExportTable))
+	for (size_t index = 0; index < exportCount; ++index)
 	{
-		PE_FOREACH_EXPORTED_SYMBOL(&pe, pSymbol)
-		{
-			if (PE_SYMBOL_HAS_NAME(pSymbol))
-			{
-				const char* name = pSymbol->Name;
-				if (name[0] == 'l' && name[1] == 'u' && name[2] == 'a')
-				{
-					auto addr = (uint64_t)hModule;
-					addr += pSymbol->Address.VA - pe.qwBaseAddress;
-					symbols[pSymbol->Name] = addr;
-
-					EmmyFacade::Get().SendLog(LogType::Debug, "\t[B]Lua symbol: %s", name);
-				}
-			}
-		}
+		symbols[exports[index].name] = reinterpret_cast<DWORD64>(hModule) + exports[index].rva;
+		EmmyFacade::Get().SendLog(LogType::Debug, "\t[B]Lua symbol: %s (%s)",
+			exports[index].name, moduleName);
 	}
 
 	HookLuaFunctions(symbols);
 
-	// imports
-	if (st == PE_SUCCESS)
-		st = peParseImportTable(&pe);
-	if (st == PE_SUCCESS && PE_HAS_TABLE(&pe, ImportTable))
-	{
-		PE_FOREACH_IMPORTED_MODULE(&pe, pModule)
-		{
-			HMODULE hImportModule = GetModuleHandle(pModule->Name);
-			LoadSymbolsRecursively(hProcess, hImportModule);
-		}
-	}
+	// A module the loader pulls in as a dependency of another one never passes
+	// through LoadLibraryExW, so its Lua symbols only surface through this walk.
+	const auto imports = ImageImportNames(imageBase);
+	for (const auto& imported : imports)
+		LoadSymbolsRecursively(hProcess, GetModuleHandle(imported.c_str()));
 }
 
 void PostLoadLibrary(HMODULE hModule)
