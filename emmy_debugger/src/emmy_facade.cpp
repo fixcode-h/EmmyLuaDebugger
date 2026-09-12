@@ -17,6 +17,7 @@
 #include "emmy_debugger/emmy_facade.h"
 #include <cstdarg>
 #include <cstdint>
+#include <thread>
 #include "nlohmann/json.hpp"
 #include "emmy_debugger/transporter/socket_server_transporter.h"
 #include "emmy_debugger/transporter/socket_client_transporter.h"
@@ -307,9 +308,6 @@ WorkMode EmmyFacade::GetWorkMode() {
 void EmmyFacade::InitReq(InitParams & params) {
 	const bool alreadyNegotiated = _protocolSession.IsNegotiated();
 	_protocolSession.MarkNegotiated();
-	if (!alreadyNegotiated && StartHook) {
-		StartHook();
-	}
 	if (alreadyNegotiated) {
 		SendInitResponse();
 		return;
@@ -337,6 +335,18 @@ void EmmyFacade::InitReq(InitParams & params) {
 	// and discards every later debug.paused for it.
 	SendInitResponse();
 	ReconcileHostLuaVms();
+
+	// Hook installation must not run before the response above. It walks every
+	// loaded module (and recursively their imports) and opens each PE image from
+	// disk; a large host such as the UE editor loads 200+ modules, so discovery
+	// can take tens of seconds. Blocking here pushes InitRsp past the client's
+	// handshake timeout: the client then never receives the VM snapshot, never
+	// learns the VM id, and rejects every later debug.paused as an unknown VM.
+	// Discovery therefore runs off the message thread, and the hooks start
+	// reporting as soon as it completes.
+	if (StartHook) {
+		std::thread(StartHook).detach();
+	}
 }
 
 bool EmmyFacade::AuthenticateInit(const std::string& token) {
