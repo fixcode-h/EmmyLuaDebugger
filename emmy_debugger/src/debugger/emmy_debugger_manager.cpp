@@ -1,4 +1,4 @@
-﻿#include "emmy_debugger/debugger/emmy_debugger_manager.h"
+#include "emmy_debugger/debugger/emmy_debugger_manager.h"
 #include "emmy_debugger/api/lua_version.h"
 #include "emmy_debugger/util.h"
 
@@ -502,6 +502,13 @@ void EmmyDebuggerManager::OnDisconnect()
 	EMMY_LOCK_GUARD(debuggerMtx);
 	for (auto it : debuggers)
 	{
+		// Release any pause before stopping the debugger. EnterDebugMode only
+		// wakes on an action, so a dropped connection (debug window closed,
+		// transport error, agent reconfigure) would otherwise leave the host's
+		// Lua thread blocked inside the pause loop forever: the target stays
+		// frozen with no client able to resume it.
+		it.second->ClearPause();
+		it.second->ExitDebugMode();
 		it.second->Stop();
 	}
 }
