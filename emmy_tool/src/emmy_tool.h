@@ -18,6 +18,8 @@ public:
 
 	int ReceiveLog();
 
+	int Capabilities();
+
 private:
 
 	CommandLine _cmd;

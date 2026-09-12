@@ -169,6 +169,22 @@ if(EMMY_VM_REGISTRY_TEST)
     if(EMMY_USE_LUA_SOURCE AND NOT EMMY_LUA_VERSION STREQUAL "jit")
         add_executable(emmy_native_ide_fixture ${emmy_SOURCE_DIR}/tests/native_ide_fixture.cpp)
         target_link_libraries(emmy_native_ide_fixture PRIVATE emmy_debugger)
+
+        # Real attach fixture: deliberately links only the shared Lua runtime.
+        # emmy_tool injects emmy_hook.dll after this process starts, exercising
+        # the same symbol discovery and fallback VM registration path as UE.
+        add_executable(emmy_attach_lua_fixture ${emmy_SOURCE_DIR}/tests/native_attach_lua_fixture.cpp)
+        target_include_directories(emmy_attach_lua_fixture PRIVATE
+                ${emmy_SOURCE_DIR}/third-party/${EMMY_LUA_DIR}/src)
+        target_link_libraries(emmy_attach_lua_fixture PRIVATE lua${EMMY_LUA_VERSION})
+        add_dependencies(emmy_attach_lua_fixture lua${EMMY_LUA_VERSION})
+        if(WIN32 AND LUA_BUILD_AS_DLL)
+            add_custom_command(TARGET emmy_attach_lua_fixture POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:lua${EMMY_LUA_VERSION}>"
+                    "$<TARGET_FILE_DIR:emmy_attach_lua_fixture>")
+        endif()
+
         add_executable(emmy_native_socket_harness ${emmy_SOURCE_DIR}/tests/native_socket_harness.cpp)
         target_link_libraries(emmy_native_socket_harness PRIVATE emmy_debugger)
         add_test(NAME emmy_native_socket_harness COMMAND emmy_native_socket_harness)

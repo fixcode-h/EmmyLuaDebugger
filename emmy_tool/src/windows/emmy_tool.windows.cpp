@@ -282,6 +282,11 @@ int EmmyTool::Attach() {
 	return 0;
 }
 
+int EmmyTool::Capabilities() {
+	printf("{\"schemaVersion\":1,\"tool\":\"emmy_tool\",\"attachBootstrapStatus\":true,\"attachStatusSchemaVersion\":1,\"attachAuthTokenEnv\":\"EMMY_ATTACH_AUTH_TOKEN\"}\n");
+	return 0;
+}
+
 int EmmyTool::ListProcesses() {
 	std::vector<Process> list;
 	GetProcesses(list);

@@ -12,6 +12,7 @@ int main(int argc, char **argv) {
 	commandLine.AddTarget("arch_pid", false);
 	commandLine.AddTarget("launch");
 	commandLine.AddTarget("receive_log");
+	commandLine.AddTarget("capabilities");
 
 	// pid
 	commandLine.Add<int>("p");
@@ -62,6 +63,9 @@ int main(int argc, char **argv) {
 	}
 	if (target == "receive_log") {
 		return tool.ReceiveLog();
+	}
+	if (target == "capabilities") {
+		return tool.Capabilities();
 	}
 
 	return -1;
