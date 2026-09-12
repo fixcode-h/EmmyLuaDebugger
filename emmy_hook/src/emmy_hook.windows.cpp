@@ -10,7 +10,6 @@
 #include <TlHelp32.h>
 #include <Psapi.h>
 #include "easyhook.h"
-#include "libpe/libpe.h"
 #include "io.h"
 #include "emmy_debugger/transporter/socket_server_transporter.h"
 #include "shared/shme.h"
@@ -632,7 +631,7 @@ void FindAndHook()
 		}
 	}
 	// 重要：先处理现有模块，最后再安装钩子
-	// 如果先安装钩子，LoadSymbolsRecursively 中的操作（如 SendLog、peOpenFile）
+	// 如果先安装钩子，LoadSymbolsRecursively 中的操作（如 SendLog、遍历模块表）
 	// 可能触发新的 DLL 加载，导致 LoadLibraryExW_intercept 被调用，
 	// 它会尝试获取已经被 PostLoadLibrary 持有的锁，造成死锁
 	// （SRWLOCK 不支持递归锁定）

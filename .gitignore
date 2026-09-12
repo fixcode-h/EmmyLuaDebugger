@@ -28,6 +28,9 @@ Release/
 # 构建脚本
 build_script/
 
+# 本地 CMake 构建目录（build-<date>、build-<purpose> 等）
+build-*/
+
 # 编译产物
 *.obj
 *.lib

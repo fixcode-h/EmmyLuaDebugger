@@ -19,15 +19,6 @@ target_sources(emmy_hook PRIVATE
         src/emmy_hook.windows.cpp
         src/hook_manager.cpp
 
-
-        #src/libpe
-        src/libpe/htable.cpp
-        src/libpe/htable.h
-        src/libpe/libpe.cpp
-        src/libpe/libpe.h
-        src/libpe/llist.cpp
-        src/libpe/llist.h
-
 )
 
 add_dependencies(
